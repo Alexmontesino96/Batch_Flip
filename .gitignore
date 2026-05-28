@@ -5,3 +5,6 @@ dist/
 .env
 .venv/
 venv/
+uploads/
+*.csv
+*.xlsx
