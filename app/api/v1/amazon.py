@@ -130,19 +130,21 @@ async def callback(
     conn = existing.scalar_one_or_none()
 
     if conn:
-        conn.refresh_token = refresh_token
+        conn.set_refresh_token(refresh_token)
         conn.store_name = store_name
         conn.marketplace_ids = marketplace_ids
         conn.is_active = True
         conn.user_id = uuid.UUID(user_id)
+        conn.set_refresh_token(refresh_token)
     else:
         conn = SellerConnection(
             user_id=uuid.UUID(user_id),
             seller_id=selling_partner_id,
             store_name=store_name,
             marketplace_ids=marketplace_ids,
-            refresh_token=refresh_token,
+            refresh_token_encrypted="",
         )
+        conn.set_refresh_token(refresh_token)
         db.add(conn)
 
     await db.commit()
@@ -226,8 +228,9 @@ async def connect_manual(
         seller_id=seller_id,
         store_name=store_name,
         marketplace_ids=marketplace_ids,
-        refresh_token=req.refresh_token,
+        refresh_token_encrypted="",  # Se encripta abajo
     )
+    conn.set_refresh_token(req.refresh_token)
     db.add(conn)
     await db.commit()
     await db.refresh(conn)

@@ -137,7 +137,7 @@ async def process_job(job_id: str, db: AsyncSession) -> None:
         conn = await db.get(SellerConnection, job.seller_connection_id)
         if conn and conn.is_active:
             spapi = SPAPIProvider(
-                refresh_token=conn.refresh_token,
+                refresh_token=conn.get_refresh_token(),
                 seller_id=conn.seller_id,
                 marketplace=job.marketplace,
             )

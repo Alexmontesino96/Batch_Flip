@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     sp_api_refresh_token: str = ""
     sp_api_seller_id: str = "A2TSJV48FRRFVQ"  # AMONCA Tecnology
 
+    # Encryption
+    encryption_key: str = ""
+
     # Supabase Auth
     supabase_url: str = ""
     supabase_anon_key: str = ""
