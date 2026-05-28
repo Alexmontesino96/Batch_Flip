@@ -13,3 +13,6 @@ openpyxl==3.1.5
 python-multipart==0.0.12
 pandas==2.2.3
 openai==1.58.1
+supabase==2.15.0
+cryptography==46.0.1
+python-jose[cryptography]==3.5.0

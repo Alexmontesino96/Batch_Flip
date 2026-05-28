@@ -1,0 +1,46 @@
+services:
+  - type: web
+    name: batchflip-api
+    runtime: python
+    region: ohio
+    plan: starter
+    buildCommand: pip install -r requirements.txt && alembic upgrade head
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: APP_ENV
+        value: production
+      - key: DEBUG
+        value: "false"
+      - key: DATABASE_URL
+        fromDatabase:
+          name: batchflip-db
+          property: connectionString
+        # Override: usar Supabase PostgreSQL directamente
+      - key: KEEPA_API_KEY
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SP_API_APP_ID
+        sync: false
+      - key: SP_API_CLIENT_ID
+        sync: false
+      - key: SP_API_CLIENT_SECRET
+        sync: false
+      - key: SP_API_REFRESH_TOKEN
+        sync: false
+      - key: SP_API_SELLER_ID
+        sync: false
+      - key: ENCRYPTION_KEY
+        sync: false
+      - key: ENCRYPTION_KEY_PREVIOUS
+        value: ""
+      - key: UPLOAD_DIR
+        value: /tmp/uploads
+      - key: CORS_ORIGINS
+        sync: false
+    healthCheckPath: /health
+    autoDeploy: true
