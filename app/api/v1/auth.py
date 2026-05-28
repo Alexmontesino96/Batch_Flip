@@ -2,10 +2,14 @@
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel, EmailStr
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.v1.deps import get_db
+from app.core.audit import log_auth_event
 from app.core.auth import get_current_user, get_supabase
+from app.core.security_config import validate_password
 
 logger = logging.getLogger(__name__)
 
@@ -36,8 +40,9 @@ class UserResponse(BaseModel):
 
 
 @router.post("/register", response_model=AuthResponse)
-async def register(req: RegisterRequest):
+async def register(req: RegisterRequest, request: Request = None, db: AsyncSession = Depends(get_db)):
     """Registrar nuevo usuario con email + password."""
+    validate_password(req.password)
     try:
         supabase = get_supabase()
         response = supabase.auth.sign_up({
@@ -46,34 +51,33 @@ async def register(req: RegisterRequest):
         })
 
         if not response.user:
+            await log_auth_event(db, "register", "failure", email=req.email, request=request, reason="no_user_returned")
+            await db.commit()
             raise HTTPException(400, "Error al registrar usuario")
+
+        await log_auth_event(db, "register", "success", email=req.email, user_id=response.user.id, request=request)
+        await db.commit()
 
         session = response.session
         if not session:
-            # Email confirmation required
-            return AuthResponse(
-                access_token="",
-                refresh_token="",
-                user_id=response.user.id,
-                email=response.user.email,
-            )
+            return AuthResponse(access_token="", refresh_token="", user_id=response.user.id, email=response.user.email)
 
         return AuthResponse(
-            access_token=session.access_token,
-            refresh_token=session.refresh_token,
-            user_id=response.user.id,
-            email=response.user.email,
+            access_token=session.access_token, refresh_token=session.refresh_token,
+            user_id=response.user.id, email=response.user.email,
         )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.warning("Error en registro: %s", e)
+        await log_auth_event(db, "register", "failure", email=req.email, request=request, reason=str(e)[:200])
+        await db.commit()
         raise HTTPException(400, f"Error al registrar: {str(e)}")
 
 
 @router.post("/login", response_model=AuthResponse)
-async def login(req: LoginRequest):
+async def login(req: LoginRequest, request: Request = None, db: AsyncSession = Depends(get_db)):
     """Login con email + password."""
     try:
         supabase = get_supabase()
@@ -83,7 +87,12 @@ async def login(req: LoginRequest):
         })
 
         if not response.user or not response.session:
+            await log_auth_event(db, "login", "failure", email=req.email, request=request, reason="invalid_credentials")
+            await db.commit()
             raise HTTPException(401, "Credenciales inválidas")
+
+        await log_auth_event(db, "login", "success", email=req.email, user_id=response.user.id, request=request)
+        await db.commit()
 
         return AuthResponse(
             access_token=response.session.access_token,
@@ -96,6 +105,8 @@ async def login(req: LoginRequest):
         raise
     except Exception as e:
         logger.warning("Error en login: %s", e)
+        await log_auth_event(db, "login", "failure", email=req.email, request=request, reason=str(e)[:200])
+        await db.commit()
         raise HTTPException(401, f"Credenciales inválidas: {str(e)}")
 
 
