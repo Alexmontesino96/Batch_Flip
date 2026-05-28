@@ -35,13 +35,14 @@ def create_app() -> FastAPI:
     # Security headers middleware
     app.add_middleware(SecurityHeadersMiddleware)
 
-    # CORS
+    # CORS — whitelist explícita, no wildcard
+    origins = [o.strip() for o in settings.cors_origins.split(",") if o.strip()]
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],  # Restringir en producción
+        allow_origins=origins,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "PUT", "DELETE", "PATCH"],
+        allow_headers=["Authorization", "Content-Type"],
     )
 
     from app.api.v1.router import v1_router

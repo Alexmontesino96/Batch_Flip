@@ -5,7 +5,8 @@ class Settings(BaseSettings):
     # App
     app_name: str = "Batch Flip"
     app_env: str = "development"
-    debug: bool = True
+    debug: bool = False  # Nunca True por defecto — activar explícitamente en .env
+    cors_origins: str = "http://localhost:3000,http://localhost:8501"  # Whitelist explícita
 
     # Database
     database_url: str = "postgresql+asyncpg://batchflip:batchflip@localhost:5432/batchflip"

@@ -1,4 +1,7 @@
-"""Admin endpoints — key rotation, audit, system health."""
+"""Admin endpoints — solo accesibles con rol admin.
+
+Protegido: solo usuarios con is_admin en user_metadata de Supabase.
+"""
 
 import logging
 
@@ -16,19 +19,27 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
+async def require_admin(user: dict = Depends(get_current_user)) -> dict:
+    """Dependency: requiere que el usuario tenga rol admin."""
+    metadata = user.get("user_metadata", {})
+    if not metadata.get("is_admin", False):
+        raise HTTPException(403, "Acceso denegado: se requiere rol admin")
+    return user
+
+
 @router.post("/rotate-encryption-key")
 async def rotate_encryption_key(
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(require_admin),
 ):
     """Rotar encryption key: re-encripta todos los tokens con la key actual.
 
-    Proceso de rotation:
-    1. Generar nueva key → ENCRYPTION_KEY_NEW
-    2. En .env: mover ENCRYPTION_KEY → ENCRYPTION_KEY_PREVIOUS, poner nueva en ENCRYPTION_KEY
-    3. Restart app (carga nuevas keys)
-    4. Llamar este endpoint → re-encripta todos los tokens con key nueva
-    5. Cuando todo OK, quitar ENCRYPTION_KEY_PREVIOUS del .env
+    Proceso:
+    1. Generar nueva key con GET /admin/generate-key
+    2. En .env: ENCRYPTION_KEY=nueva, ENCRYPTION_KEY_PREVIOUS=vieja
+    3. Restart app
+    4. POST este endpoint → re-encripta todos los tokens
+    5. Quitar ENCRYPTION_KEY_PREVIOUS
     """
     result = await db.execute(
         select(SellerConnection).where(SellerConnection.is_active == True)
@@ -48,18 +59,12 @@ async def rotate_encryption_key(
             errors += 1
 
     await db.commit()
+    logger.info("Key rotation by admin %s: %d rotated, %d errors", user["id"], rotated, errors)
 
-    logger.info("Key rotation: %d rotated, %d errors", rotated, errors)
-
-    return {
-        "message": "Key rotation complete",
-        "rotated": rotated,
-        "errors": errors,
-        "next_step": "Remove ENCRYPTION_KEY_PREVIOUS from .env after verifying all tokens work",
-    }
+    return {"message": "Key rotation complete", "rotated": rotated, "errors": errors}
 
 
 @router.get("/generate-key")
-async def gen_key(user: dict = Depends(get_current_user)):
-    """Genera una nueva Fernet key (para planificar rotation)."""
+async def gen_key(user: dict = Depends(require_admin)):
+    """Genera una nueva Fernet key (solo admin)."""
     return {"new_key": generate_new_key()}

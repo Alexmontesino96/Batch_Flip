@@ -25,8 +25,38 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/amazon", tags=["amazon"])
 
-# OAuth state store (en producción usar Redis)
-_oauth_states: dict[str, str] = {}  # {state: user_id}
+# OAuth state store con TTL (10 min)
+import time as _time
+
+_OAUTH_STATE_TTL = 600  # 10 minutos
+_oauth_states: dict[str, tuple[str, float]] = {}  # {state: (user_id, created_at)}
+_MAX_PENDING_STATES = 100  # Prevenir memory abuse
+
+
+def _set_oauth_state(state: str, user_id: str) -> None:
+    """Guarda state con timestamp. Limpia estados expirados."""
+    now = _time.time()
+    # Limpiar expirados
+    expired = [k for k, (_, t) in _oauth_states.items() if now - t > _OAUTH_STATE_TTL]
+    for k in expired:
+        del _oauth_states[k]
+    # Limitar cantidad
+    if len(_oauth_states) >= _MAX_PENDING_STATES:
+        oldest = min(_oauth_states, key=lambda k: _oauth_states[k][1])
+        del _oauth_states[oldest]
+    _oauth_states[state] = (user_id, now)
+
+
+def _pop_oauth_state(state: str) -> str | None:
+    """Extrae y valida state. Retorna user_id o None si expirado/inválido."""
+    entry = _oauth_states.pop(state, None)
+    if not entry:
+        return None
+    user_id, created_at = entry
+    if _time.time() - created_at > _OAUTH_STATE_TTL:
+        return None
+    return user_id
+
 
 AMAZON_AUTH_URL = "https://sellercentral.amazon.com/apps/authorize/consent"
 AMAZON_TOKEN_URL = "https://api.amazon.com/auth/o2/token"
@@ -59,7 +89,7 @@ async def authorize(
 ):
     """Genera URL de autorización de Amazon Seller Central."""
     state = secrets.token_urlsafe(32)
-    _oauth_states[state] = user["id"]
+    _set_oauth_state(state, user["id"])
 
     url = (
         f"{AMAZON_AUTH_URL}"
@@ -79,8 +109,8 @@ async def callback(
     db: AsyncSession = Depends(get_db),
 ):
     """Callback de Amazon OAuth — exchange code por refresh_token."""
-    # Verificar state
-    user_id = _oauth_states.pop(state, None)
+    # Verificar state con TTL
+    user_id = _pop_oauth_state(state)
     if not user_id:
         raise HTTPException(400, "State inválido o expirado")
 

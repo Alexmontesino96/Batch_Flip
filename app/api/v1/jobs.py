@@ -1,4 +1,4 @@
-"""Endpoints para batch jobs."""
+"""Endpoints para batch jobs — todos protegidos con auth + ownership."""
 
 import math
 import os
@@ -9,9 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.v1.deps import get_db
+from app.api.v1.deps import get_db, get_job_with_ownership, validate_seller_connection_ownership
 from app.config import settings
-from app.core.auth import get_current_user, get_current_user_optional
+from app.core.auth import get_current_user
 from app.models.job import MARKETPLACE_DOMAINS, Job
 from app.models.job_item import JobItem
 from app.schemas.job import (
@@ -26,6 +26,10 @@ from app.services.file_parser import parse_file
 
 router = APIRouter(prefix="/jobs", tags=["jobs"])
 
+# Upload limits
+MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
+ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".tsv", ".tab"}
+
 
 @router.post("", response_model=JobResponse, status_code=201)
 async def create_job(
@@ -36,6 +40,9 @@ async def create_job(
     """Crear un nuevo batch job (requiere autenticación)."""
     if req.marketplace not in MARKETPLACE_DOMAINS:
         raise HTTPException(400, f"Marketplace inválido. Opciones: {list(MARKETPLACE_DOMAINS.keys())}")
+
+    # Validar ownership de seller_connection
+    await validate_seller_connection_ownership(req.seller_connection_id, user["id"], db)
 
     job = Job(
         user_id=uuid.UUID(user["id"]),
@@ -55,48 +62,65 @@ async def create_job(
 
 
 @router.post("/{job_id}/upload", response_model=UploadResponse)
-async def upload_file(job_id: uuid.UUID, file: UploadFile, db: AsyncSession = Depends(get_db)):
-    """Upload archivo CSV/XLSX para un job."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(404, "Job no encontrado")
+async def upload_file(
+    job_id: uuid.UUID,
+    file: UploadFile,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Upload archivo CSV/XLSX para un job (requiere auth + ownership)."""
+    job = await get_job_with_ownership(job_id, db, user["id"])
+
     if job.status not in ("pending", "uploading"):
         raise HTTPException(400, f"Job en estado '{job.status}', no se puede subir archivo")
 
-    # Guardar archivo
+    # Validar extensión
+    ext = Path(file.filename or "file.csv").suffix.lower()
+    if ext not in ALLOWED_EXTENSIONS:
+        raise HTTPException(400, f"Formato no permitido. Permitidos: {ALLOWED_EXTENSIONS}")
+
+    # Validar tamaño (leer en chunks para no cargar todo en memoria)
     os.makedirs(settings.upload_dir, exist_ok=True)
-    ext = Path(file.filename or "file.csv").suffix
     file_name = f"{job_id}{ext}"
     file_path = os.path.join(settings.upload_dir, file_name)
 
-    content = await file.read()
+    total_size = 0
     with open(file_path, "wb") as f:
-        f.write(content)
+        while chunk := await file.read(1024 * 1024):  # 1MB chunks
+            total_size += len(chunk)
+            if total_size > MAX_UPLOAD_SIZE:
+                f.close()
+                os.remove(file_path)
+                raise HTTPException(413, f"Archivo demasiado grande. Máximo: {MAX_UPLOAD_SIZE // (1024*1024)} MB")
+            f.write(chunk)
 
     # Parsear archivo
-    parsed = parse_file(file_path)
+    try:
+        parsed = parse_file(file_path)
+    except Exception as e:
+        os.remove(file_path)  # Limpiar archivo huérfano
+        raise HTTPException(400, f"Error parseando archivo: {str(e)[:200]}")
 
     # Actualizar job
     job.status = "uploading"
     job.file_name = file.filename
     job.file_path = file_path
-    job.file_size_bytes = len(content)
+    job.file_size_bytes = total_size
     job.total_items = parsed.total_rows
     job.detected_id_column = parsed.id_column
     job.detected_cost_column = parsed.cost_column
     job.detected_id_type = parsed.detected_id_type
 
-    # Pre-crear JobItems
-    items = []
-    for row in parsed.rows:
-        items.append(JobItem(
+    items = [
+        JobItem(
             job_id=job_id,
             input_row=row.row_number,
             input_id=row.product_id,
             input_id_type=row.id_type,
             cost_price=row.cost_price,
-        ))
-
+        )
+        for row in parsed.rows
+    ]
     db.add_all(items)
     await db.commit()
     await db.refresh(job)
@@ -111,11 +135,14 @@ async def upload_file(job_id: uuid.UUID, file: UploadFile, db: AsyncSession = De
 
 
 @router.post("/{job_id}/start")
-async def start_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Iniciar procesamiento del job."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(404, "Job no encontrado")
+async def start_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Iniciar procesamiento del job (requiere auth + ownership)."""
+    job = await get_job_with_ownership(job_id, db, user["id"])
+
     if job.total_items == 0:
         raise HTTPException(400, "Sube un archivo primero")
     if job.status not in ("uploading", "pending"):
@@ -125,7 +152,6 @@ async def start_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
     job.progress_phase = "resolving_ids"
     await db.commit()
 
-    # Encolar en ARQ (import lazy para evitar dependencia circular)
     from app.worker.tasks import enqueue_job
     await enqueue_job(str(job_id))
 
@@ -133,11 +159,13 @@ async def start_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{job_id}", response_model=JobResponse)
-async def get_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Obtener status de un job."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(404, "Job no encontrado")
+async def get_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Obtener status de un job (requiere auth + ownership)."""
+    job = await get_job_with_ownership(job_id, db, user["id"])
     return job
 
 
@@ -149,19 +177,15 @@ async def get_results(
     sort_by: str = "profit",
     profitable_only: bool = False,
     db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user),
 ):
-    """Obtener resultados paginados del job."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(404, "Job no encontrado")
+    """Obtener resultados paginados del job (requiere auth + ownership)."""
+    await get_job_with_ownership(job_id, db, user["id"])
 
-    # Base query
     query = select(JobItem).where(JobItem.job_id == job_id, JobItem.status == "matched")
-
     if profitable_only:
         query = query.where(JobItem.profit > 0)
 
-    # Sort
     sort_map = {
         "profit": JobItem.profit.desc().nulls_last(),
         "roi": JobItem.roi_pct.desc().nulls_last(),
@@ -171,11 +195,9 @@ async def get_results(
     }
     query = query.order_by(sort_map.get(sort_by, sort_map["profit"]))
 
-    # Count
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    # Paginate
     offset = (page - 1) * page_size
     query = query.offset(offset).limit(page_size)
     result = await db.execute(query)
@@ -191,13 +213,14 @@ async def get_results(
 
 
 @router.get("/{job_id}/results/stats", response_model=JobStatsResponse)
-async def get_stats(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Resumen estadístico del job."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(404, "Job no encontrado")
+async def get_stats(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Resumen estadístico del job (requiere auth + ownership)."""
+    job = await get_job_with_ownership(job_id, db, user["id"])
 
-    # Calcular stats
     result = await db.execute(select(JobItem).where(JobItem.job_id == job_id))
     job_items = result.scalars().all()
     matched_items = [item for item in job_items if item.status == "matched"]
@@ -228,31 +251,30 @@ async def get_stats(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
 
 
 @router.get("/{job_id}/export")
-async def export_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Exportar resultados a CSV."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(404, "Job no encontrado")
+async def export_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Exportar resultados a CSV (requiere auth + ownership)."""
+    await get_job_with_ownership(job_id, db, user["id"])
 
     from app.services.export_service import export_job_csv
     csv_path = await export_job_csv(job_id, db)
 
     from fastapi.responses import FileResponse
-    return FileResponse(
-        csv_path,
-        media_type="text/csv",
-        filename=f"batchflip_{job_id}.csv",
-    )
+    return FileResponse(csv_path, media_type="text/csv", filename=f"batchflip_{job_id}.csv")
 
 
 @router.delete("/{job_id}")
-async def delete_job(job_id: uuid.UUID, db: AsyncSession = Depends(get_db)):
-    """Eliminar un job y sus resultados."""
-    job = await db.get(Job, job_id)
-    if not job:
-        raise HTTPException(404, "Job no encontrado")
+async def delete_job(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user),
+):
+    """Eliminar un job y sus resultados (requiere auth + ownership)."""
+    job = await get_job_with_ownership(job_id, db, user["id"])
 
-    # Eliminar archivo si existe
     if job.file_path and os.path.exists(job.file_path):
         os.remove(job.file_path)
 
