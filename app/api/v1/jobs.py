@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_db, get_job_with_ownership, validate_seller_connection_ownership
 from app.config import settings
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user_with_db, upsert_user
 from app.models.job import MARKETPLACE_DOMAINS, Job
 from app.models.job_item import JobItem
 from app.schemas.job import (
@@ -35,7 +35,7 @@ ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".tsv", ".tab"}
 async def create_job(
     req: CreateJobRequest,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Crear un nuevo batch job (requiere autenticación)."""
     if req.marketplace not in MARKETPLACE_DOMAINS:
@@ -66,7 +66,7 @@ async def upload_file(
     job_id: uuid.UUID,
     file: UploadFile,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Upload archivo CSV/XLSX para un job (requiere auth + ownership)."""
     job = await get_job_with_ownership(job_id, db, user["id"])
@@ -138,15 +138,29 @@ async def upload_file(
 async def start_job(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
-    """Iniciar procesamiento del job (requiere auth + ownership)."""
+    """Iniciar procesamiento del job (requiere auth + ownership + rate limit)."""
     job = await get_job_with_ownership(job_id, db, user["id"])
 
     if job.total_items == 0:
         raise HTTPException(400, "Sube un archivo primero")
     if job.status not in ("uploading", "pending"):
         raise HTTPException(400, f"Job en estado '{job.status}', no se puede iniciar")
+
+    # Rate limiting por plan
+    from app.core.auth import upsert_user
+    user_row = await upsert_user(db, user["id"], user["email"])
+    remaining = user_row.scans_limit_month - user_row.scans_used_month
+    if job.total_items > remaining:
+        raise HTTPException(
+            429,
+            f"Límite mensual: {user_row.scans_limit_month} items (plan {user_row.plan}). "
+            f"Usados: {user_row.scans_used_month}. Disponibles: {remaining}. Job necesita: {job.total_items}."
+        )
+
+    # Reservar scans
+    user_row.scans_used_month += job.total_items
 
     job.status = "processing"
     job.progress_phase = "resolving_ids"
@@ -155,14 +169,14 @@ async def start_job(
     from app.worker.tasks import enqueue_job
     await enqueue_job(str(job_id))
 
-    return {"message": "Job iniciado", "job_id": str(job_id)}
+    return {"message": "Job iniciado", "job_id": str(job_id), "scans_remaining": remaining - job.total_items}
 
 
 @router.get("/{job_id}", response_model=JobResponse)
 async def get_job(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Obtener status de un job (requiere auth + ownership)."""
     job = await get_job_with_ownership(job_id, db, user["id"])
@@ -177,7 +191,7 @@ async def get_results(
     sort_by: str = "profit",
     profitable_only: bool = False,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Obtener resultados paginados del job (requiere auth + ownership)."""
     await get_job_with_ownership(job_id, db, user["id"])
@@ -216,7 +230,7 @@ async def get_results(
 async def get_stats(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Resumen estadístico del job (requiere auth + ownership)."""
     job = await get_job_with_ownership(job_id, db, user["id"])
@@ -254,7 +268,7 @@ async def get_stats(
 async def export_job(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Exportar resultados a CSV (requiere auth + ownership)."""
     await get_job_with_ownership(job_id, db, user["id"])
@@ -270,7 +284,7 @@ async def export_job(
 async def delete_job(
     job_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Eliminar un job y sus resultados (requiere auth + ownership)."""
     job = await get_job_with_ownership(job_id, db, user["id"])
@@ -287,7 +301,7 @@ async def delete_job(
 async def list_jobs(
     limit: int = 20,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Listar jobs del usuario autenticado."""
     query = (

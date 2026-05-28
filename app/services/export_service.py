@@ -31,6 +31,13 @@ EXPORT_COLUMNS = [
     ("list_price", "List Price"),
     ("estimated_sale_price", "Est. Sale Price"),
 
+    # Physical attributes
+    ("item_weight_grams", "Item Weight (g)"),
+    ("package_weight_grams", "Package Weight (g)"),
+    ("item_height", "Item Height (1/100in)"),
+    ("item_length", "Item Length (1/100in)"),
+    ("item_width", "Item Width (1/100in)"),
+
     # Profit
     ("profit", "Profit"),
     ("roi_pct", "ROI %"),

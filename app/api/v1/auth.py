@@ -8,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_db
 from app.core.audit import log_auth_event
-from app.core.auth import get_current_user, get_supabase
+from app.core.auth import get_current_user_with_db, get_supabase, upsert_user
 from app.core.security_config import validate_password
 
 logger = logging.getLogger(__name__)
@@ -36,7 +36,10 @@ class AuthResponse(BaseModel):
 class UserResponse(BaseModel):
     id: str
     email: str
-    user_metadata: dict
+    plan: str = "free"
+    is_admin: bool = False
+    scans_used_month: int = 0
+    scans_limit_month: int = 500
 
 
 @router.post("/register", response_model=AuthResponse)
@@ -91,6 +94,8 @@ async def login(req: LoginRequest, request: Request = None, db: AsyncSession = D
             await db.commit()
             raise HTTPException(401, "Credenciales inválidas")
 
+        # Upsert en nuestra tabla users (sync con Supabase Auth)
+        await upsert_user(db, response.user.id, response.user.email)
         await log_auth_event(db, "login", "success", email=req.email, user_id=response.user.id, request=request)
         await db.commit()
 
@@ -134,10 +139,18 @@ async def refresh_token(refresh_token: str):
 
 
 @router.get("/me", response_model=UserResponse)
-async def get_me(user: dict = Depends(get_current_user)):
-    """Obtener perfil del usuario autenticado."""
+async def get_me(
+    supabase_info: dict = Depends(get_current_user_with_db),
+    db: AsyncSession = Depends(get_db),
+):
+    """Obtener perfil del usuario autenticado (desde nuestra tabla users)."""
+    user = await upsert_user(db, supabase_info["id"], supabase_info["email"])
+    await db.commit()
     return UserResponse(
-        id=user["id"],
-        email=user["email"],
-        user_metadata=user["user_metadata"],
+        id=str(user.id),
+        email=user.email,
+        plan=user.plan,
+        is_admin=user.is_admin,
+        scans_used_month=user.scans_used_month,
+        scans_limit_month=user.scans_limit_month,
     )

@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_db
 from app.config import settings
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user_with_db
 from app.models.seller import SellerConnection
 from app.schemas.analyze import SingleAnalysisRequest, SingleAnalysisResponse
 from app.services.engines.profit_engine import compute_profit
@@ -50,7 +50,7 @@ async def _get_user_spapi(user: dict, db: AsyncSession, marketplace: str) -> tup
 async def analyze_single(
     req: SingleAnalysisRequest,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Analizar un solo producto (requiere autenticación)."""
     if not settings.keepa_api_key:
@@ -119,6 +119,11 @@ async def analyze_single(
             restriction_message=product.restriction_message,
             sales_rank=product.sales_rank, buy_box_price=product.buy_box_price,
             list_price=product.list_price,
+            item_weight_grams=product.item_weight_grams,
+            package_weight_grams=product.package_weight_grams,
+            item_height=product.item_height,
+            item_length=product.item_length,
+            item_width=product.item_width,
             estimated_sale_price=sale_price,
             profit=round(profit_result.profit, 2) if profit_result else None,
             roi_pct=round(profit_result.roi * 100, 2) if profit_result else None,

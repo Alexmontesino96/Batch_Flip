@@ -17,6 +17,7 @@ class JobItem(Base):
     input_id: Mapped[str] = mapped_column(String(50))
     input_id_type: Mapped[str | None] = mapped_column(String(10), nullable=True)
     cost_price: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    product_asin: Mapped[str | None] = mapped_column(String(10), ForeignKey("products.asin"), nullable=True, index=True)
 
     # Resolved Amazon data
     asin: Mapped[str | None] = mapped_column(String(10), nullable=True, index=True)
@@ -34,6 +35,11 @@ class JobItem(Base):
     is_hazmat: Mapped[bool] = mapped_column(Boolean, default=False)
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     list_price: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    item_weight_grams: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    package_weight_grams: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    item_height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    item_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    item_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     # Profit calculations
     estimated_sale_price: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)

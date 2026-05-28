@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_db
 from app.config import settings
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user_with_db
 from app.models.seller import SellerConnection
 
 logger = logging.getLogger(__name__)
@@ -85,7 +85,7 @@ class ManualConnectRequest(BaseModel):
 @router.get("/authorize", response_model=AuthorizeResponse)
 async def authorize(
     redirect_uri: str = Query(default="http://localhost:3000/dashboard/connect/callback"),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Genera URL de autorización de Amazon Seller Central."""
     state = secrets.token_urlsafe(32)
@@ -195,7 +195,7 @@ async def callback(
 async def connect_manual(
     req: ManualConnectRequest,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Conectar manualmente con refresh_token (solo para desarrollo)."""
     # Obtener seller info usando el refresh_token
@@ -278,7 +278,7 @@ async def connect_manual(
 @router.get("/connections", response_model=list[ConnectionResponse])
 async def list_connections(
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Lista todas las conexiones de Amazon del usuario."""
     result = await db.execute(
@@ -306,7 +306,7 @@ async def list_connections(
 async def disconnect(
     connection_id: uuid.UUID,
     db: AsyncSession = Depends(get_db),
-    user: dict = Depends(get_current_user),
+    user: dict = Depends(get_current_user_with_db),
 ):
     """Desconectar una cuenta de Amazon."""
     conn = await db.get(SellerConnection, connection_id)

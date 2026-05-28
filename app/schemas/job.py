@@ -81,6 +81,11 @@ class JobItemResponse(BaseModel):
     is_hazmat: bool
     image_url: str | None
     list_price: float | None
+    item_weight_grams: int | None
+    package_weight_grams: int | None
+    item_height: int | None
+    item_length: int | None
+    item_width: int | None
 
     # Listing Restrictions
     can_sell: bool | None

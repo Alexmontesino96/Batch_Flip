@@ -1,38 +1,31 @@
-"""Supabase Auth — registro, login, y validación de JWT.
+"""Supabase Auth + User ORM sync.
 
-Supabase maneja:
-- Registro/login (email + password)
-- JWT tokens (access + refresh)
-- Social login (Google, etc.)
-- Email verification, password reset
-
-Nosotros:
-- Validamos el JWT en cada request protegido
-- Extraemos user_id del token
-- Usamos service_role para operaciones admin
+Supabase maneja JWT. Nosotros:
+- Validamos JWT con Supabase admin client
+- Hacemos upsert en nuestra tabla users (plan, is_admin, rate limits)
+- get_current_user retorna User ORM (no dict de Supabase)
 """
 
 import logging
+import uuid
 from typing import Optional
 
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy.ext.asyncio import AsyncSession
 from supabase import Client, create_client
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
 
-# Bearer token scheme
 bearer_scheme = HTTPBearer(auto_error=False)
 
-# Supabase clients (lazy init)
 _supabase_client: Optional[Client] = None
 _supabase_admin: Optional[Client] = None
 
 
 def get_supabase() -> Client:
-    """Supabase client con anon key (para operaciones de usuario)."""
     global _supabase_client
     if _supabase_client is None:
         _supabase_client = create_client(settings.supabase_url, settings.supabase_anon_key)
@@ -40,20 +33,52 @@ def get_supabase() -> Client:
 
 
 def get_supabase_admin() -> Client:
-    """Supabase client con service_role key (para operaciones admin)."""
     global _supabase_admin
     if _supabase_admin is None:
         _supabase_admin = create_client(settings.supabase_url, settings.supabase_service_role_key)
     return _supabase_admin
 
 
+async def upsert_user(db: AsyncSession, supabase_id: str, email: str) -> "User":
+    """Crea o actualiza nuestro User local sincronizado con Supabase Auth."""
+    from app.models.user import User, PLAN_LIMITS
+
+    user = await db.get(User, uuid.UUID(supabase_id))
+    if user:
+        if user.email != email:
+            user.email = email
+        return user
+
+    user = User(
+        id=uuid.UUID(supabase_id),
+        supabase_id=supabase_id,
+        email=email,
+        plan="free",
+        scans_limit_month=PLAN_LIMITS["free"],
+    )
+    db.add(user)
+    await db.flush()
+    return user
+
+
 async def get_current_user(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
-) -> dict:
-    """Dependency: valida JWT y retorna user data de Supabase.
+    db: AsyncSession = Depends(None),  # Se overridea por el endpoint
+) -> "User":
+    """Dependency: valida JWT → retorna User ORM de nuestra DB.
 
-    Retorna dict con: id, email, user_metadata, etc.
-    Raises 401 si no hay token o es inválido.
+    NOTA: Los endpoints deben pasar db explícitamente. Esta función
+    se usa como base — ver get_current_user_with_db abajo.
+    """
+    raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, "Use get_current_user_with_db")
+
+
+async def get_current_user_with_db(
+    credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
+) -> dict:
+    """Paso 1: Valida JWT con Supabase y retorna info básica.
+
+    Los endpoints que necesitan el User ORM hacen el upsert + lookup en su propio db session.
     """
     if not credentials:
         raise HTTPException(
@@ -63,42 +88,38 @@ async def get_current_user(
         )
 
     token = credentials.credentials
-
     try:
         supabase = get_supabase_admin()
         user_response = supabase.auth.get_user(token)
         user = user_response.user
 
         if not user:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Token inválido o expirado",
-            )
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token inválido o expirado")
 
         return {
             "id": user.id,
             "email": user.email,
-            "user_metadata": user.user_metadata or {},
-            "created_at": str(user.created_at) if user.created_at else None,
         }
-
     except HTTPException:
         raise
     except Exception as e:
         logger.warning("Error validando token: %s", e)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Token inválido o expirado",
-        )
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Token inválido o expirado")
+
+
+async def get_authenticated_user(
+    supabase_info: dict = Depends(get_current_user_with_db),
+) -> dict:
+    """Dependency para endpoints que NO necesitan DB (retorna dict básico)."""
+    return supabase_info
 
 
 async def get_current_user_optional(
     credentials: HTTPAuthorizationCredentials = Depends(bearer_scheme),
 ) -> dict | None:
-    """Dependency: igual que get_current_user pero retorna None si no hay token."""
     if not credentials:
         return None
     try:
-        return await get_current_user(credentials)
+        return await get_current_user_with_db(credentials)
     except HTTPException:
         return None

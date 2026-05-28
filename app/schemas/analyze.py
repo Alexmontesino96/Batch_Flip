@@ -30,6 +30,13 @@ class SingleAnalysisResponse(BaseModel):
     buy_box_price: float | None
     list_price: float | None
 
+    # Physical attributes
+    item_weight_grams: int | None
+    package_weight_grams: int | None
+    item_height: int | None
+    item_length: int | None
+    item_width: int | None
+
     # Profit
     estimated_sale_price: float | None
     profit: float | None

@@ -49,6 +49,11 @@ def _populate_item_from_product(item: JobItem, product: ProductData) -> None:
     item.image_url = product.image_url
     item.sales_per_day = product.sales_per_day
     item.list_price = product.list_price
+    item.item_weight_grams = product.item_weight_grams
+    item.package_weight_grams = product.package_weight_grams
+    item.item_height = product.item_height
+    item.item_length = product.item_length
+    item.item_width = product.item_width
 
     # Campos Keepa enriquecidos
     item.monthly_sold = product.monthly_sold
@@ -290,6 +295,12 @@ async def process_job(job_id: str, db: AsyncSession) -> None:
                             product.fba_fulfillment_fee = fee.fba_fee
 
         # ════════════════════════════════════════════
+        # FASE 4b: UPSERT products (cache compartida)
+        # ════════════════════════════════════════════
+        from app.services.product_cache import upsert_products_batch
+        await upsert_products_batch(db, all_product_data)
+
+        # ════════════════════════════════════════════
         # FASE 5: Analysis
         # ════════════════════════════════════════════
         job.progress_phase = "analyzing"
@@ -308,6 +319,7 @@ async def process_job(job_id: str, db: AsyncSession) -> None:
                     continue
 
                 # Poblar todos los datos
+                item.product_asin = product.asin
                 _populate_item_from_product(item, product)
 
                 # Velocity

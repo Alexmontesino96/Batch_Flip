@@ -70,6 +70,53 @@ def _get_marketplace_id(marketplace: str) -> str:
     return MARKETPLACE_IDS.get(marketplace, MARKETPLACE_IDS["us"])
 
 
+def _weight_to_grams(measure: dict | None) -> int | None:
+    """Convierte un peso de SP-API a gramos."""
+    if not measure:
+        return None
+
+    value = measure.get("value")
+    unit = str(measure.get("unit", "")).lower()
+    if value is None:
+        return None
+
+    if unit in {"grams", "gram", "g"}:
+        return int(round(value))
+    if unit in {"kilograms", "kilogram", "kg"}:
+        return int(round(value * 1000))
+    if unit in {"pounds", "pound", "lb", "lbs"}:
+        return int(round(value * 453.592))
+    if unit in {"ounces", "ounce", "oz"}:
+        return int(round(value * 28.3495))
+    return None
+
+
+def _dimension_to_hundredths_inch(measure: dict | None) -> int | None:
+    """Convierte una dimensión de SP-API a 1/100 de pulgada.
+
+    Keepa usa esta escala para altura/largo/ancho, así que mantenemos el
+    mismo contrato en ProductData para evitar mezclar unidades.
+    """
+    if not measure:
+        return None
+
+    value = measure.get("value")
+    unit = str(measure.get("unit", "")).lower()
+    if value is None:
+        return None
+
+    if unit in {"inches", "inch", "in"}:
+        inches = value
+    elif unit in {"centimeters", "centimeter", "cm"}:
+        inches = value / 2.54
+    elif unit in {"millimeters", "millimeter", "mm"}:
+        inches = value / 25.4
+    else:
+        return None
+
+    return int(round(inches * 100))
+
+
 class SPAPIProvider(DataProvider):
     """Implementación de DataProvider usando Amazon SP-API."""
 
@@ -226,19 +273,13 @@ class SPAPIProvider(DataProvider):
                     elif ident["identifierType"] == "EAN":
                         ean_list.append(ident["identifier"])
 
-        # Weight conversion
-        item_weight_grams = None
-        pkg_weight_grams = None
         item_dims = dims.get("item", {})
         pkg_dims = dims.get("package", {})
-        if item_dims.get("weight"):
-            w = item_dims["weight"]
-            if w.get("unit") == "pounds":
-                item_weight_grams = int(w["value"] * 453.592)
-        if pkg_dims.get("weight"):
-            w = pkg_dims["weight"]
-            if w.get("unit") == "pounds":
-                pkg_weight_grams = int(w["value"] * 453.592)
+        item_weight_grams = _weight_to_grams(item_dims.get("weight"))
+        pkg_weight_grams = _weight_to_grams(pkg_dims.get("weight"))
+        item_height = _dimension_to_hundredths_inch(item_dims.get("height"))
+        item_length = _dimension_to_hundredths_inch(item_dims.get("length"))
+        item_width = _dimension_to_hundredths_inch(item_dims.get("width"))
 
         return ProductData(
             asin=data["asin"],
@@ -258,6 +299,9 @@ class SPAPIProvider(DataProvider):
             ean_list=ean_list or None,
             item_weight_grams=item_weight_grams,
             package_weight_grams=pkg_weight_grams,
+            item_height=item_height,
+            item_length=item_length,
+            item_width=item_width,
         )
 
     # ── Listing Restrictions ──

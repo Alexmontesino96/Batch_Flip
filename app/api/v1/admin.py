@@ -10,7 +10,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_db
-from app.core.auth import get_current_user
+from app.core.auth import get_current_user_with_db, upsert_user
 from app.core.encryption import generate_new_key, rotate_token
 from app.models.seller import SellerConnection
 
@@ -19,10 +19,13 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/admin", tags=["admin"])
 
 
-async def require_admin(user: dict = Depends(get_current_user)) -> dict:
-    """Dependency: requiere que el usuario tenga rol admin."""
-    metadata = user.get("user_metadata", {})
-    if not metadata.get("is_admin", False):
+async def require_admin(
+    supabase_info: dict = Depends(get_current_user_with_db),
+    db: AsyncSession = Depends(get_db),
+) -> "User":
+    """Dependency: requiere is_admin=True en nuestra tabla users (no Supabase metadata)."""
+    user = await upsert_user(db, supabase_info["id"], supabase_info["email"])
+    if not user.is_admin:
         raise HTTPException(403, "Acceso denegado: se requiere rol admin")
     return user
 

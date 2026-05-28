@@ -194,6 +194,27 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
         shipping = float(job.shipping_to_amazon)
         prep = float(job.prep_cost_per_item)
 
+        # Upsert products con datos parciales de SP-API
+        from app.models.product import Product
+        for asin in unique_asins:
+            existing = await db.get(Product, asin)
+            if not existing:
+                offer = offers_data.get(asin)
+                pricing = pricing_data.get(asin)
+                db.add(Product(
+                    asin=asin,
+                    buy_box_price=offer.buy_box_price if offer else None,
+                    sales_rank=pricing.sales_rank if pricing else None,
+                    seller_count=(
+                        (offer.offer_count_new_fba or 0) + (offer.offer_count_new_fbm or 0)
+                        + (offer.offer_count_used_fba or 0) + (offer.offer_count_used_fbm or 0)
+                    ) if offer else None,
+                    spapi_updated_at=datetime.now(timezone.utc),
+                    analysis_count=1,
+                ))
+            else:
+                existing.analysis_count = (existing.analysis_count or 0) + 1
+
         for asin, item_list in asin_to_items.items():
             offer = offers_data.get(asin)
             pricing = pricing_data.get(asin)
@@ -202,6 +223,7 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
             fba_elig = fba_eligibility.get(asin)
 
             for item in item_list:
+                item.product_asin = asin
                 # Buy Box + offers data
                 if offer:
                     item.buy_box_price = offer.buy_box_price
