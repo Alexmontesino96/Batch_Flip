@@ -24,6 +24,7 @@ EXPORT_COLUMNS = [
 
     # Restrictions
     ("can_sell", "Can Sell?"),
+    ("fba_eligible", "FBA Eligible?"),
     ("restriction_reason", "Restriction"),
 
     # Pricing
@@ -76,6 +77,9 @@ EXPORT_COLUMNS = [
     ("is_hazmat", "Hazmat?"),
     ("image_url", "Image URL"),
 
+    # Summary
+    ("best_scenario", "Best Scenario"),
+
     # Status
     ("status", "Status"),
 ]
@@ -104,13 +108,23 @@ async def export_job_csv(job_id: UUID, db: AsyncSession) -> str:
         for item in items:
             row = []
             for attr, _ in EXPORT_COLUMNS:
-                val = getattr(item, attr, "")
-                if val is None:
-                    val = ""
-                elif isinstance(val, bool):
-                    val = "Yes" if val else "No"
-                elif isinstance(val, float):
-                    val = round(val, 2)
+                if attr == "best_scenario":
+                    if item.can_sell is False:
+                        val = "Restricted"
+                    elif item.fba_eligible is False:
+                        val = "MFN Only"
+                    elif item.profit is not None and item.profit > 0:
+                        val = "FBA"
+                    else:
+                        val = "—"
+                else:
+                    val = getattr(item, attr, "")
+                    if val is None:
+                        val = ""
+                    elif isinstance(val, bool):
+                        val = "Yes" if val else "No"
+                    elif isinstance(val, float):
+                        val = round(val, 2)
                 row.append(val)
             writer.writerow(row)
 

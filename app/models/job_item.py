@@ -53,6 +53,7 @@ class JobItem(Base):
 
     # Listing Restrictions (SP-API)
     can_sell: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    fba_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     restriction_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
     restriction_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 

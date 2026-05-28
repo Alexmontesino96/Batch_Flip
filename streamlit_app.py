@@ -41,9 +41,99 @@ def format_number(val):
     return f"{val:,}"
 
 
+def resolve_scenario_costs(
+    compare_fulfillment,
+    prep_cost,
+    shipping_cost,
+    fulfillment_type,
+    fba_prep_cost=None,
+    shipping_to_amazon=None,
+    mfn_prep_cost=None,
+    shipping_to_customer=None,
+    mfn_packaging_cost=0.0,
+):
+    if fulfillment_type == "fba":
+        return (
+            float(shipping_to_amazon if compare_fulfillment and shipping_to_amazon is not None else shipping_cost),
+            float(fba_prep_cost if compare_fulfillment and fba_prep_cost is not None else prep_cost),
+            0.0,
+        )
+    return (
+        float(shipping_to_customer if compare_fulfillment and shipping_to_customer is not None else shipping_cost),
+        float(mfn_prep_cost if compare_fulfillment and mfn_prep_cost is not None else prep_cost),
+        float(mfn_packaging_cost if compare_fulfillment else 0.0),
+    )
+
+
+def resolve_eligibility(product, fulfillment_type):
+    if product.can_sell is False:
+        return False, product.restriction_reason or product.restriction_message
+    if fulfillment_type == "fba":
+        if getattr(product, "fba_eligible", None) is False:
+            return False, "NOT_FBA_ELIGIBLE"
+        if product.can_sell is True and getattr(product, "fba_eligible", None) is True:
+            return True, None
+        return None, None
+    if product.can_sell is True:
+        return True, None
+    return product.can_sell, product.restriction_reason if product.can_sell is False else None
+
+
+def build_scenario_result(product, cost_price, fulfillment_type, shipping_cost, prep_cost, packaging_cost, exact_fee, compute_profit):
+    marketplace = "amazon_mfn" if fulfillment_type == "mfn" else "amazon_fba"
+    referral_fee_pct = product.referral_fee_pct
+    fee_fixed = product.fba_fulfillment_fee if fulfillment_type == "fba" else None
+
+    if exact_fee and product.buy_box_price:
+        if exact_fee.referral_fee > 0:
+            referral_fee_pct = exact_fee.referral_fee / product.buy_box_price
+        fee_fixed = exact_fee.fba_fee if fulfillment_type == "fba" else 0.0
+
+    profit_result = None
+    if product.buy_box_price and cost_price > 0:
+        profit_result = compute_profit(
+            sale_price=product.buy_box_price,
+            cost_price=cost_price,
+            marketplace=marketplace,
+            shipping_cost=shipping_cost,
+            packaging_cost=packaging_cost,
+            prep_cost=prep_cost,
+            fee_rate_override=referral_fee_pct,
+            fee_fixed_override=fee_fixed,
+        )
+
+    eligible_to_sell, eligibility_reason = resolve_eligibility(product, fulfillment_type)
+    return {
+        "fulfillment_type": fulfillment_type,
+        "eligible_to_sell": eligible_to_sell,
+        "eligibility_reason": eligibility_reason,
+        "uses_exact_fees": exact_fee is not None,
+        "shipping_cost": shipping_cost,
+        "prep_cost": prep_cost,
+        "packaging_cost": packaging_cost,
+        "referral_fee_pct": referral_fee_pct,
+        "fees": exact_fee,
+        "profit": profit_result,
+    }
+
+
 # ── Single Analysis ──
 
-async def run_single_analysis(product_id, cost_price, marketplace, fulfillment_type, prep_cost, shipping_cost, check_restrictions):
+async def run_single_analysis(
+    product_id,
+    cost_price,
+    marketplace,
+    fulfillment_type,
+    prep_cost,
+    shipping_cost,
+    check_restrictions,
+    compare_fulfillment=False,
+    fba_prep_cost=None,
+    shipping_to_amazon=None,
+    mfn_prep_cost=None,
+    shipping_to_customer=None,
+    mfn_packaging_cost=0.0,
+):
     from app.config import settings
     from app.services.engines.profit_engine import compute_profit
     from app.services.engines.velocity_engine import compute_velocity_from_sales_per_day
@@ -55,8 +145,9 @@ async def run_single_analysis(product_id, cost_price, marketplace, fulfillment_t
 
     domain = DOMAIN_MAP.get(marketplace, 1)
     keepa = KeepaProvider()
+    effective_checks = check_restrictions or compare_fulfillment
     spapi = None
-    if check_restrictions and settings.sp_api_refresh_token:
+    if effective_checks and settings.sp_api_refresh_token:
         spapi = SPAPIProvider(seller_id=settings.sp_api_seller_id, marketplace=marketplace)
     hybrid = HybridProvider(keepa=keepa, spapi=spapi, seller_id=settings.sp_api_seller_id if spapi else None, marketplace=marketplace)
 
@@ -68,28 +159,58 @@ async def run_single_analysis(product_id, cost_price, marketplace, fulfillment_t
         if not asin:
             return None, "No se encontró ASIN"
 
-        products = await hybrid.get_products_enriched([asin], domain=domain, check_restrictions=check_restrictions, fetch_fees=True)
+        products = await hybrid.get_products_enriched([asin], domain=domain, check_restrictions=effective_checks, fetch_fees=True)
         p = products.get(asin)
         if not p:
             return None, "No se encontraron datos"
 
-        # Profit
-        profit_result = None
-        mkt = "amazon_mfn" if fulfillment_type == "mfn" else "amazon_fba"
-        if p.buy_box_price and cost_price > 0:
-            fee_fixed = p.fba_fulfillment_fee if mkt == "amazon_fba" else None
-            profit_result = compute_profit(
-                sale_price=p.buy_box_price, cost_price=cost_price, marketplace=mkt,
-                shipping_cost=shipping_cost, prep_cost=prep_cost,
-                fee_rate_override=p.referral_fee_pct, fee_fixed_override=fee_fixed,
-            )
+        scenario_fees = {}
+        if spapi and p.buy_box_price and p.buy_box_price > 0:
+            fee_scenarios = ["fba", "mfn"] if compare_fulfillment else (["mfn"] if fulfillment_type == "mfn" else ["fba"])
+            fee_tasks = [
+                spapi.get_fees_estimate(p.asin, p.buy_box_price, marketplace=marketplace, is_fba=(scenario == "fba"))
+                for scenario in fee_scenarios
+            ]
+            scenario_fees = dict(zip(fee_scenarios, await asyncio.gather(*fee_tasks)))
+
+        fba_shipping, fba_prep, fba_packaging = resolve_scenario_costs(
+            compare_fulfillment, prep_cost, shipping_cost, "fba",
+            fba_prep_cost=fba_prep_cost, shipping_to_amazon=shipping_to_amazon,
+            mfn_prep_cost=mfn_prep_cost, shipping_to_customer=shipping_to_customer,
+            mfn_packaging_cost=mfn_packaging_cost,
+        )
+        mfn_shipping, mfn_prep, mfn_packaging = resolve_scenario_costs(
+            compare_fulfillment, prep_cost, shipping_cost, "mfn",
+            fba_prep_cost=fba_prep_cost, shipping_to_amazon=shipping_to_amazon,
+            mfn_prep_cost=mfn_prep_cost, shipping_to_customer=shipping_to_customer,
+            mfn_packaging_cost=mfn_packaging_cost,
+        )
+
+        scenarios = {
+            "fba": build_scenario_result(
+                p, cost_price, "fba", fba_shipping, fba_prep, fba_packaging,
+                scenario_fees.get("fba"), compute_profit,
+            ),
+            "mfn": build_scenario_result(
+                p, cost_price, "mfn", mfn_shipping, mfn_prep, mfn_packaging,
+                scenario_fees.get("mfn"), compute_profit,
+            ),
+        }
+        selected_key = "mfn" if fulfillment_type == "mfn" else "fba"
+        selected = scenarios[selected_key]
 
         # Velocity
         vel = None
         if p.sales_per_day and p.sales_per_day > 0:
             vel = compute_velocity_from_sales_per_day(p.sales_per_day)
 
-        return {"product": p, "profit": profit_result, "velocity": vel}, None
+        return {
+            "product": p,
+            "selected_fulfillment_type": selected_key,
+            "selected": selected,
+            "scenarios": scenarios if compare_fulfillment else None,
+            "velocity": vel,
+        }, None
     finally:
         await hybrid.close()
 
@@ -187,6 +308,24 @@ with tab1:
         fulfillment_type = st.selectbox("Fulfillment", ["fba", "mfn"])
         prep_cost = st.number_input("Prep Cost ($)", min_value=0.0, value=0.0, step=0.25)
         shipping_cost = st.number_input("Shipping Cost ($)", min_value=0.0, value=0.0, step=0.50)
+        compare_fulfillment = st.checkbox("Compare FBA and MFN", value=False)
+        if compare_fulfillment:
+            st.caption("Compare mode forces seller-specific checks for fees and FBA eligibility.")
+            st.caption("Scenario-specific costs")
+            sc1, sc2 = st.columns(2)
+            with sc1:
+                fba_prep_cost = st.number_input("FBA Prep ($)", min_value=0.0, value=float(prep_cost), step=0.25)
+                shipping_to_amazon = st.number_input("To Amazon ($)", min_value=0.0, value=float(shipping_cost), step=0.50)
+            with sc2:
+                mfn_prep_cost = st.number_input("MFN Prep ($)", min_value=0.0, value=float(prep_cost), step=0.25)
+                shipping_to_customer = st.number_input("To Customer ($)", min_value=0.0, value=float(shipping_cost), step=0.50)
+                mfn_packaging_cost = st.number_input("MFN Packaging ($)", min_value=0.0, value=0.0, step=0.25)
+        else:
+            fba_prep_cost = None
+            shipping_to_amazon = None
+            mfn_prep_cost = None
+            shipping_to_customer = None
+            mfn_packaging_cost = 0.0
         check_restrictions = st.checkbox("Check Listing Restrictions (SP-API)", value=True)
 
         analyze_btn = st.button("Analyze", type="primary", use_container_width=True)
@@ -196,7 +335,9 @@ with tab1:
             with st.spinner("Analyzing..."):
                 start = time.time()
                 result, error = run_async(run_single_analysis(
-                    product_id, cost_price, marketplace, fulfillment_type, prep_cost, shipping_cost, check_restrictions,
+                    product_id, cost_price, marketplace, fulfillment_type, prep_cost, shipping_cost,
+                    check_restrictions, compare_fulfillment, fba_prep_cost, shipping_to_amazon,
+                    mfn_prep_cost, shipping_to_customer, mfn_packaging_cost,
                 ))
                 elapsed = time.time() - start
 
@@ -204,7 +345,9 @@ with tab1:
                 st.error(f"Error: {error}")
             elif result:
                 p = result["product"]
-                pr = result["profit"]
+                selected = result["selected"]
+                pr = selected["profit"]
+                scenarios = result["scenarios"]
                 vel = result["velocity"]
 
                 st.caption(f"Analysis completed in {elapsed:.1f}s")
@@ -225,19 +368,62 @@ with tab1:
                     st.success("✅ **Can Sell** — No restrictions found")
                 else:
                     st.warning("❓ Restriction status unknown (SP-API not checked)")
+                if compare_fulfillment and getattr(p, "fba_eligible", None) is False:
+                    st.info("FBA eligibility: not eligible for inbound FBA on this seller account")
 
                 # Metrics
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Buy Box", format_currency(p.buy_box_price))
-                m2.metric("Profit", format_currency(pr.profit if pr else None), delta=f"{pr.roi*100:.0f}% ROI" if pr and pr.roi else None)
-                m3.metric("Monthly Sold", format_number(p.monthly_sold))
-                m4.metric("Velocity", f"{vel.score}/100" if vel else "—", delta=vel.estimated_days_to_sell if vel else None)
+                if compare_fulfillment and scenarios:
+                    fba_profit = scenarios["fba"]["profit"]
+                    mfn_profit = scenarios["mfn"]["profit"]
+                    m1, m2, m3, m4, m5 = st.columns(5)
+                    m1.metric("Buy Box", format_currency(p.buy_box_price))
+                    m2.metric(
+                        "FBA Profit",
+                        format_currency(fba_profit.profit if fba_profit else None),
+                        delta=f"{fba_profit.roi*100:.0f}% ROI" if fba_profit and fba_profit.roi else None,
+                    )
+                    m3.metric(
+                        "MFN Profit",
+                        format_currency(mfn_profit.profit if mfn_profit else None),
+                        delta=f"{mfn_profit.roi*100:.0f}% ROI" if mfn_profit and mfn_profit.roi else None,
+                    )
+                    m4.metric("Monthly Sold", format_number(p.monthly_sold))
+                    m5.metric("Velocity", f"{vel.score}/100" if vel else "—", delta=vel.estimated_days_to_sell if vel else None)
+                else:
+                    m1, m2, m3, m4 = st.columns(4)
+                    m1.metric("Buy Box", format_currency(p.buy_box_price))
+                    m2.metric("Profit", format_currency(pr.profit if pr else None), delta=f"{pr.roi*100:.0f}% ROI" if pr and pr.roi else None)
+                    m3.metric("Monthly Sold", format_number(p.monthly_sold))
+                    m4.metric("Velocity", f"{vel.score}/100" if vel else "—", delta=vel.estimated_days_to_sell if vel else None)
 
                 # Detail tabs
                 d1, d2, d3, d4 = st.tabs(["💰 Profit", "📊 Velocity", "🏪 Competition", "⭐ Reviews"])
 
                 with d1:
-                    if pr:
+                    if compare_fulfillment and scenarios:
+                        fc1, fc2 = st.columns(2)
+                        for col, key, title in ((fc1, "fba", "FBA"), (fc2, "mfn", "MFN")):
+                            scenario = scenarios[key]
+                            scenario_profit = scenario["profit"]
+                            with col:
+                                st.markdown(f"**{title} Scenario**")
+                                st.write(f"- Eligible: **{scenario['eligible_to_sell']}**")
+                                if scenario["eligibility_reason"]:
+                                    st.write(f"- Reason: **{scenario['eligibility_reason']}**")
+                                st.write(f"- Sale Price: {format_currency(p.buy_box_price)}")
+                                st.write(f"- Cost: {format_currency(cost_price)}")
+                                st.write(f"- Marketplace Fees: {format_currency(scenario_profit.marketplace_fees if scenario_profit else None)}")
+                                st.write(f"- Shipping: {format_currency(scenario['shipping_cost'])}")
+                                st.write(f"- Prep: {format_currency(scenario['prep_cost'])}")
+                                if scenario["packaging_cost"]:
+                                    st.write(f"- Packaging: {format_currency(scenario['packaging_cost'])}")
+                                st.write(f"- Return Reserve: {format_currency(scenario_profit.return_reserve if scenario_profit else None)}")
+                                st.write(f"- Referral Fee: {format_pct(scenario['referral_fee_pct'] * 100 if scenario['referral_fee_pct'] else None)}")
+                                st.write(f"- SP-API Total: {format_currency(scenario['fees'].total_fees if scenario['fees'] else None)}")
+                                st.write(f"- ROI: **{format_pct(scenario_profit.roi * 100 if scenario_profit else None)}**")
+                                st.write(f"- Margin: **{format_pct(scenario_profit.margin * 100 if scenario_profit else None)}**")
+                                st.write(f"- **Net Profit: {format_currency(scenario_profit.profit if scenario_profit else None)}**")
+                    elif pr:
                         fc1, fc2 = st.columns(2)
                         with fc1:
                             st.markdown("**Profit Breakdown**")
@@ -250,9 +436,9 @@ with tab1:
                             st.write(f"- **Net Profit: {format_currency(pr.profit)}**")
                         with fc2:
                             st.markdown("**Fees Detail**")
-                            st.write(f"- Referral Fee: {format_currency(p.sp_api_referral_fee)} ({format_pct(p.referral_fee_pct * 100 if p.referral_fee_pct else None)})")
-                            st.write(f"- FBA Fee: {format_currency(p.sp_api_fba_fee or p.fba_fulfillment_fee)}")
-                            st.write(f"- SP-API Total: {format_currency(p.sp_api_total_fees)}")
+                            st.write(f"- Referral Fee: {format_pct(selected['referral_fee_pct'] * 100 if selected['referral_fee_pct'] else None)}")
+                            st.write(f"- SP-API Total: {format_currency(selected['fees'].total_fees if selected['fees'] else None)}")
+                            st.write(f"- FBA Fee: {format_currency(selected['fees'].fba_fee if selected['fees'] else p.fba_fulfillment_fee)}")
                             st.write(f"- ROI: **{format_pct(pr.roi * 100)}**")
                             st.write(f"- Margin: **{format_pct(pr.margin * 100)}**")
                     else:
@@ -279,6 +465,7 @@ with tab1:
                         st.write(f"- Amazon Sells: **{'Yes' if p.amazon_is_seller else 'No'}**")
                         st.write(f"- Amazon Buy Box: **{'Yes' if p.buy_box_is_amazon else 'No'}**")
                         st.write(f"- OOS% 90d: **{p.out_of_stock_pct_90 or '?'}%**")
+                        st.write(f"- FBA Eligible: **{getattr(p, 'fba_eligible', None)}**")
 
                 with d4:
                     st.write(f"- Rating: **{p.rating}** / 5.0" if p.rating else "- Rating: —")

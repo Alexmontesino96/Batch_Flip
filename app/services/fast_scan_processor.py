@@ -116,7 +116,11 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
         logger.info("Fast scan: batch offers para %d ASINs", len(unique_asins))
         offers_task = spapi.get_item_offers_batch(unique_asins, marketplace=job.marketplace)
 
-        # Paso 2b: Competitive Pricing (offer counts, trade-in, BSR) — en paralelo
+        # Paso 2b: Catalog data (title, brand, dimensiones/peso) — en paralelo
+        logger.info("Fast scan: catálogo para %d ASINs", len(unique_asins))
+        catalog_task = spapi.get_products_batch(unique_asins)
+
+        # Paso 2c: Competitive Pricing (offer counts, trade-in, BSR) — en paralelo
         # Chunks de 20
         async def get_all_pricing():
             all_pricing: dict[str, PricingResult | None] = {}
@@ -128,7 +132,7 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
 
         pricing_task = get_all_pricing()
 
-        # Paso 2c: Restrictions (5/s) — en paralelo
+        # Paso 2d: Restrictions (5/s) — en paralelo
         restrictions_task = None
         if job.check_restrictions and seller_id:
             logger.info("Fast scan: restrictions para %d ASINs", len(unique_asins))
@@ -138,11 +142,13 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
 
         # Ejecutar en paralelo
         if restrictions_task:
-            offers_data, pricing_data, restrictions = await asyncio.gather(
-                offers_task, pricing_task, restrictions_task,
+            offers_data, catalog_data, pricing_data, restrictions = await asyncio.gather(
+                offers_task, catalog_task, pricing_task, restrictions_task,
             )
         else:
-            offers_data, pricing_data = await asyncio.gather(offers_task, pricing_task)
+            offers_data, catalog_data, pricing_data = await asyncio.gather(
+                offers_task, catalog_task, pricing_task,
+            )
             restrictions = {}
 
         # ══════════════════════════════════════
@@ -217,6 +223,7 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
 
         for asin, item_list in asin_to_items.items():
             offer = offers_data.get(asin)
+            catalog = catalog_data.get(asin)
             pricing = pricing_data.get(asin)
             restriction = restrictions.get(asin)
             fee = fees.get(asin)
@@ -224,6 +231,18 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
 
             for item in item_list:
                 item.product_asin = asin
+                if catalog:
+                    item.title = catalog.title
+                    item.brand = catalog.brand
+                    item.category = catalog.category
+                    item.sales_rank = catalog.sales_rank
+                    item.item_weight_grams = catalog.item_weight_grams
+                    item.package_weight_grams = catalog.package_weight_grams
+                    item.item_height = catalog.item_height
+                    item.item_length = catalog.item_length
+                    item.item_width = catalog.item_width
+                    item.is_hazmat = catalog.is_hazmat
+
                 # Buy Box + offers data
                 if offer:
                     item.buy_box_price = offer.buy_box_price
@@ -233,7 +252,7 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
 
                 # Competitive pricing
                 if pricing:
-                    item.sales_rank = pricing.sales_rank
+                    item.sales_rank = pricing.sales_rank or (catalog.sales_rank if catalog else None)
                     item.trade_in_value = pricing.trade_in_value
                     if not item.offer_count_new:
                         item.offer_count_new = pricing.offer_count_new

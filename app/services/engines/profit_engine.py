@@ -75,7 +75,8 @@ def compute_profit(
     risk_adjusted_net = gross_proceeds - return_reserve
     profit = risk_adjusted_net - cost_price - prep_cost
 
-    total_invested = cost_price + prep_cost
+    # ROI includes all direct costs (PM decision 2026-05-28)
+    total_invested = cost_price + prep_cost + shipping_cost + packaging_cost
     if total_invested <= 0:
         roi = float("inf") if profit > 0 else (float("-inf") if profit < 0 else 0.0)
     else:

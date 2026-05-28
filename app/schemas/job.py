@@ -1,6 +1,7 @@
 """Schemas Pydantic para Jobs."""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -9,7 +10,7 @@ from pydantic import BaseModel, Field
 class CreateJobRequest(BaseModel):
     scan_mode: str = Field(default="fast", description="'fast' (SP-API only, ~15K/hr) o 'deep' (SP-API + Keepa, ~400/hr)")
     marketplace: str = Field(default="us", description="Amazon marketplace: us, uk, de, fr, es, it, ca, mx, br, au")
-    fulfillment_type: str = Field(default="fba", description="fba o mfn")
+    fulfillment_type: Literal["fba", "mfn"] = Field(default="fba")
     prep_cost_per_item: float = Field(default=0.0, ge=0)
     shipping_to_amazon: float = Field(default=0.0, ge=0)
     seller_connection_id: UUID | None = Field(default=None, description="ID de SellerConnection para SP-API")
@@ -89,6 +90,7 @@ class JobItemResponse(BaseModel):
 
     # Listing Restrictions
     can_sell: bool | None
+    fba_eligible: bool | None
     restriction_reason: str | None
     restriction_message: str | None
 
