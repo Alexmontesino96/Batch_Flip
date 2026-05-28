@@ -53,8 +53,16 @@ class Job(Base):
     restricted_items: Mapped[int] = mapped_column(Integer, default=0)
     error_items: Mapped[int] = mapped_column(Integer, default=0)
 
-    # Cost profile (inline for MVP)
-    fulfillment_type: Mapped[str] = mapped_column(String(5), default="fba")
+    # Cost profile — dual FBA/MFN
+    fulfillment_type: Mapped[str] = mapped_column(String(5), default="fba")  # selected/preferred
+    # FBA costs
+    fba_prep_cost: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
+    fba_shipping_to_amazon: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
+    # MFN costs
+    mfn_prep_cost: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
+    mfn_shipping_to_customer: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
+    mfn_packaging_cost: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
+    # Legacy (backward compat)
     prep_cost_per_item: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
     shipping_to_amazon: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
 

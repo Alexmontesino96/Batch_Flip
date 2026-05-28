@@ -41,7 +41,7 @@ class JobItem(Base):
     item_length: Mapped[int | None] = mapped_column(Integer, nullable=True)
     item_width: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
-    # Profit calculations
+    # Profit — selected scenario (backward compat, = best or user-preferred)
     estimated_sale_price: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     profit: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     roi_pct: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
@@ -50,6 +50,21 @@ class JobItem(Base):
     shipping_cost: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
     prep_cost: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
     return_reserve: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+
+    # Profit — FBA scenario
+    fba_profit: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    fba_roi_pct: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    fba_margin_pct: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    fba_total_fees: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+
+    # Profit — MFN scenario
+    mfn_profit: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+    mfn_roi_pct: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    mfn_margin_pct: Mapped[float | None] = mapped_column(Numeric(8, 4), nullable=True)
+    mfn_total_fees: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
+
+    # Best scenario
+    best_scenario: Mapped[str | None] = mapped_column(String(10), nullable=True)  # fba, mfn, neither
 
     # Listing Restrictions (SP-API)
     can_sell: Mapped[bool | None] = mapped_column(Boolean, nullable=True)

@@ -39,15 +39,30 @@ EXPORT_COLUMNS = [
     ("item_length", "Item Length (1/100in)"),
     ("item_width", "Item Width (1/100in)"),
 
-    # Profit
-    ("profit", "Profit"),
-    ("roi_pct", "ROI %"),
-    ("margin_pct", "Margin %"),
-    ("marketplace_fees", "Total Fees"),
+    # Profit — Selected scenario
+    ("profit", "Profit (Selected)"),
+    ("roi_pct", "ROI % (Selected)"),
+    ("margin_pct", "Margin % (Selected)"),
+    ("marketplace_fees", "Fees (Selected)"),
+
+    # Profit — FBA
+    ("fba_profit", "FBA Profit"),
+    ("fba_roi_pct", "FBA ROI %"),
+    ("fba_margin_pct", "FBA Margin %"),
+    ("fba_total_fees", "FBA Total Fees"),
+
+    # Profit — MFN
+    ("mfn_profit", "MFN Profit"),
+    ("mfn_roi_pct", "MFN ROI %"),
+    ("mfn_margin_pct", "MFN Margin %"),
+    ("mfn_total_fees", "MFN Total Fees"),
+
+    # Best scenario
+    ("best_scenario", "Best Scenario"),
 
     # Fees detail
     ("sp_api_referral_fee", "Referral Fee"),
-    ("sp_api_fba_fee", "FBA Fee"),
+    ("sp_api_fba_fee", "FBA Fee (SP-API)"),
     ("fba_fee", "FBA Fee (Keepa)"),
     ("referral_fee_pct", "Referral %"),
 
@@ -77,9 +92,6 @@ EXPORT_COLUMNS = [
     ("is_hazmat", "Hazmat?"),
     ("image_url", "Image URL"),
 
-    # Summary
-    ("best_scenario", "Best Scenario"),
-
     # Status
     ("status", "Status"),
 ]
@@ -108,23 +120,13 @@ async def export_job_csv(job_id: UUID, db: AsyncSession) -> str:
         for item in items:
             row = []
             for attr, _ in EXPORT_COLUMNS:
-                if attr == "best_scenario":
-                    if item.can_sell is False:
-                        val = "Restricted"
-                    elif item.fba_eligible is False:
-                        val = "MFN Only"
-                    elif item.profit is not None and item.profit > 0:
-                        val = "FBA"
-                    else:
-                        val = "—"
-                else:
-                    val = getattr(item, attr, "")
-                    if val is None:
-                        val = ""
-                    elif isinstance(val, bool):
-                        val = "Yes" if val else "No"
-                    elif isinstance(val, float):
-                        val = round(val, 2)
+                val = getattr(item, attr, "")
+                if val is None:
+                    val = ""
+                elif isinstance(val, bool):
+                    val = "Yes" if val else "No"
+                elif isinstance(val, float):
+                    val = round(val, 2)
                 row.append(val)
             writer.writerow(row)
 

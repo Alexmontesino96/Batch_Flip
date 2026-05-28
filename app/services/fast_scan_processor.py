@@ -167,13 +167,14 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
             if offer and offer.buy_box_price and offer.buy_box_price > 0:
                 fee_requests.append((asin, offer.buy_box_price))
 
-        fees: dict[str, FeesResult | None] = {}
+        # Dual fees: FBA y MFN en paralelo (1 batch extra = ~5-10% más lento)
+        fba_fees: dict[str, FeesResult | None] = {}
+        mfn_fees: dict[str, FeesResult | None] = {}
         if fee_requests:
-            logger.info("Fast scan: batch fees para %d ASINs vendibles", len(fee_requests))
-            is_fba = job.fulfillment_type.lower() == "fba"
-            fees = await spapi.get_fees_estimate_batch(
-                fee_requests, marketplace=job.marketplace, is_fba=is_fba,
-            )
+            logger.info("Fast scan: dual batch fees (FBA+MFN) para %d ASINs", len(fee_requests))
+            fba_task = spapi.get_fees_estimate_batch(fee_requests, marketplace=job.marketplace, is_fba=True)
+            mfn_task = spapi.get_fees_estimate_batch(fee_requests, marketplace=job.marketplace, is_fba=False)
+            fba_fees, mfn_fees = await asyncio.gather(fba_task, mfn_task)
 
         # ══════════════════════════════════════
         # FASE 4: FBA Eligibility (solo vendibles)
@@ -269,41 +270,13 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
                 if fba_elig is not None:
                     item.fba_eligible = fba_elig
 
-                # Fees
-                if fee:
-                    item.sp_api_total_fees = fee.total_fees
-                    item.sp_api_referral_fee = fee.referral_fee
-                    item.sp_api_fba_fee = fee.fba_fee
-                    item.fba_fee = fee.fba_fee
-                    if fee.referral_fee > 0 and item.buy_box_price:
-                        item.referral_fee_pct = fee.referral_fee / float(item.buy_box_price)
-
-                # Profit
+                # Dual Profit: FBA + MFN en 1 pasada
+                from app.services.dual_profit import compute_dual_profit
                 sale_price = float(item.buy_box_price) if item.buy_box_price else None
-                item.estimated_sale_price = sale_price
-                fee_rate = float(item.referral_fee_pct) if item.referral_fee_pct else None
-                fee_fixed = float(item.fba_fee) if item.fba_fee and marketplace == "amazon_fba" else None
-
-                if sale_price and item.cost_price and float(item.cost_price) > 0:
-                    try:
-                        pr = compute_profit(
-                            sale_price=sale_price,
-                            cost_price=float(item.cost_price),
-                            marketplace=marketplace,
-                            shipping_cost=shipping,
-                            prep_cost=prep,
-                            fee_rate_override=fee_rate,
-                            fee_fixed_override=fee_fixed,
-                        )
-                        item.profit = round(pr.profit, 2)
-                        item.roi_pct = round(pr.roi * 100, 4) if pr.roi else 0
-                        item.margin_pct = round(pr.margin * 100, 4) if pr.margin else 0
-                        item.marketplace_fees = round(pr.marketplace_fees, 2)
-                        item.shipping_cost = round(pr.shipping_cost, 2)
-                        item.prep_cost = round(pr.prep_cost, 2)
-                        item.return_reserve = round(pr.return_reserve, 2)
-                    except Exception as e:
-                        logger.warning("Error profit %s: %s", asin, e)
+                compute_dual_profit(
+                    item=item, job=job, sale_price=sale_price,
+                    fba_fees=fba_fees.get(asin), mfn_fees=mfn_fees.get(asin),
+                )
 
                 # Status
                 if restriction and restriction.can_sell is False:

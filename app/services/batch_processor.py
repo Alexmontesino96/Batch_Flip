@@ -22,7 +22,7 @@ from app.models.job import Job
 from app.models.job_item import JobItem
 from app.services.engines.profit_engine import compute_profit
 from app.services.engines.velocity_engine import compute_velocity_from_sales_per_day
-from app.services.providers.base import ProductData
+from app.services.providers.base import FeesResult, ProductData
 from app.services.providers.keepa import KeepaProvider
 from app.services.providers.spapi import SPAPIProvider
 
@@ -277,18 +277,23 @@ async def process_job(job_id: str, db: AsyncSession) -> None:
                 if product.buy_box_price and product.buy_box_price > 0:
                     fee_requests.append((asin, product.buy_box_price))
 
+            # Dual fees: FBA y MFN en paralelo
+            fba_fees_map: dict[str, FeesResult | None] = {}
+            mfn_fees_map: dict[str, FeesResult | None] = {}
             if fee_requests:
-                logger.info("Fase 4: obteniendo fees para %d ASINs vendibles", len(fee_requests))
-                fees = await spapi.get_fees_estimate_batch(
-                    fee_requests, marketplace=job.marketplace, is_fba=is_fba,
+                logger.info("Fase 4: dual fees (FBA+MFN) para %d ASINs", len(fee_requests))
+                import asyncio as _aio
+                fba_fees_map, mfn_fees_map = await _aio.gather(
+                    spapi.get_fees_estimate_batch(fee_requests, marketplace=job.marketplace, is_fba=True),
+                    spapi.get_fees_estimate_batch(fee_requests, marketplace=job.marketplace, is_fba=False),
                 )
-                for asin, fee in fees.items():
+                # Update ProductData con FBA fees para Keepa override
+                for asin, fee in fba_fees_map.items():
                     product = all_product_data.get(asin)
                     if product and fee:
                         product.sp_api_total_fees = fee.total_fees
                         product.sp_api_referral_fee = fee.referral_fee
                         product.sp_api_fba_fee = fee.fba_fee
-                        # SP-API fees son más precisos — override Keepa
                         if fee.referral_fee > 0 and product.buy_box_price:
                             product.referral_fee_pct = fee.referral_fee / product.buy_box_price
                         if fee.fba_fee > 0:
@@ -306,9 +311,7 @@ async def process_job(job_id: str, db: AsyncSession) -> None:
         job.progress_phase = "analyzing"
         await db.commit()
 
-        marketplace = _resolve_profit_marketplace(job.fulfillment_type)
-        shipping = float(job.shipping_to_amazon)
-        prep = float(job.prep_cost_per_item)
+        from app.services.dual_profit import compute_dual_profit
 
         for asin, item_list in asin_to_items.items():
             product = all_product_data.get(asin)
@@ -325,16 +328,21 @@ async def process_job(job_id: str, db: AsyncSession) -> None:
                 # Velocity
                 _compute_velocity(item, product)
 
-                # Determinar status
+                # Dual Profit: FBA + MFN
+                compute_dual_profit(
+                    item=item, job=job,
+                    sale_price=product.buy_box_price,
+                    fba_fees=fba_fees_map.get(asin) if spapi else None,
+                    mfn_fees=mfn_fees_map.get(asin) if spapi else None,
+                    keepa_referral_pct=product.referral_fee_pct,
+                    keepa_fba_fee=product.fba_fulfillment_fee,
+                )
+
+                # Status
                 if product.can_sell is False:
                     item.status = "restricted"
-                    # Aún calcular profit para informar al seller
-                    _compute_item_profit(item, product, marketplace, shipping, prep)
-                    continue
-
-                # Profit
-                _compute_item_profit(item, product, marketplace, shipping, prep)
-                item.status = "matched"
+                else:
+                    item.status = "matched"
 
         # ════════════════════════════════════════════
         # FASE 6: Persist

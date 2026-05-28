@@ -44,14 +44,26 @@ async def create_job(
     # Validar ownership de seller_connection
     await validate_seller_connection_ownership(req.seller_connection_id, user["id"], db)
 
+    # Map legacy fields to new dual fields
+    fba_prep = req.fba_prep_cost or req.prep_cost_per_item
+    fba_ship = req.fba_shipping_to_amazon or req.shipping_to_amazon
+
     job = Job(
         user_id=uuid.UUID(user["id"]),
         scan_mode=req.scan_mode,
         marketplace=req.marketplace,
         domain_id=MARKETPLACE_DOMAINS[req.marketplace],
         fulfillment_type=req.fulfillment_type,
+        # Dual costs
+        fba_prep_cost=fba_prep,
+        fba_shipping_to_amazon=fba_ship,
+        mfn_prep_cost=req.mfn_prep_cost,
+        mfn_shipping_to_customer=req.mfn_shipping_to_customer,
+        mfn_packaging_cost=req.mfn_packaging_cost,
+        # Legacy
         prep_cost_per_item=req.prep_cost_per_item,
         shipping_to_amazon=req.shipping_to_amazon,
+        # SP-API
         seller_connection_id=req.seller_connection_id,
         check_restrictions=req.check_restrictions,
     )

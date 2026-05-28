@@ -8,13 +8,22 @@ from pydantic import BaseModel, Field
 
 
 class CreateJobRequest(BaseModel):
-    scan_mode: str = Field(default="fast", description="'fast' (SP-API only, ~15K/hr) o 'deep' (SP-API + Keepa, ~400/hr)")
-    marketplace: str = Field(default="us", description="Amazon marketplace: us, uk, de, fr, es, it, ca, mx, br, au")
-    fulfillment_type: Literal["fba", "mfn"] = Field(default="fba")
-    prep_cost_per_item: float = Field(default=0.0, ge=0)
-    shipping_to_amazon: float = Field(default=0.0, ge=0)
-    seller_connection_id: UUID | None = Field(default=None, description="ID de SellerConnection para SP-API")
-    check_restrictions: bool = Field(default=True, description="Verificar listing restrictions via SP-API")
+    scan_mode: str = Field(default="fast", description="'fast' (SP-API only) o 'deep' (SP-API + Keepa)")
+    marketplace: str = Field(default="us", description="Amazon marketplace")
+    fulfillment_type: Literal["fba", "mfn"] = Field(default="fba", description="Preferred/selected fulfillment")
+    # FBA costs
+    fba_prep_cost: float = Field(default=0.0, ge=0, description="Prep cost per item for FBA")
+    fba_shipping_to_amazon: float = Field(default=0.0, ge=0, description="Shipping to FBA warehouse per item")
+    # MFN costs
+    mfn_prep_cost: float = Field(default=0.0, ge=0, description="Prep cost per item for MFN")
+    mfn_shipping_to_customer: float = Field(default=0.0, ge=0, description="Shipping to customer per item")
+    mfn_packaging_cost: float = Field(default=0.0, ge=0, description="Packaging cost per item for MFN")
+    # Legacy (backward compat)
+    prep_cost_per_item: float = Field(default=0.0, ge=0, description="Legacy: maps to fba_prep_cost")
+    shipping_to_amazon: float = Field(default=0.0, ge=0, description="Legacy: maps to fba_shipping_to_amazon")
+    # SP-API
+    seller_connection_id: UUID | None = Field(default=None)
+    check_restrictions: bool = Field(default=True)
 
 
 class UploadResponse(BaseModel):
@@ -101,12 +110,27 @@ class JobItemResponse(BaseModel):
     sp_api_referral_fee: float | None
     sp_api_fba_fee: float | None
 
-    # Profit calculations
+    # Profit — selected scenario
     estimated_sale_price: float | None
     profit: float | None
     roi_pct: float | None
     margin_pct: float | None
     marketplace_fees: float | None
+
+    # Profit — FBA scenario
+    fba_profit: float | None
+    fba_roi_pct: float | None
+    fba_margin_pct: float | None
+    fba_total_fees: float | None
+
+    # Profit — MFN scenario
+    mfn_profit: float | None
+    mfn_roi_pct: float | None
+    mfn_margin_pct: float | None
+    mfn_total_fees: float | None
+
+    # Best scenario
+    best_scenario: str | None  # fba, mfn, neither
 
     # Velocity & Sales
     velocity_score: int | None
