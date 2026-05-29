@@ -41,6 +41,6 @@ services:
       - key: UPLOAD_DIR
         value: /tmp/uploads
       - key: CORS_ORIGINS
-        sync: false
+        value: http://localhost:3000,http://localhost:8501,https://flipiqbatch.com
     healthCheckPath: /health
     autoDeploy: true
