@@ -60,6 +60,11 @@ class Product(Base):
     is_hazmat: Mapped[bool] = mapped_column(Boolean, default=False)
     is_adult_product: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # FBA Eligibility cache (TTL 7 días — dato estable por ASIN + marketplace)
+    fba_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    fba_eligible_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fba_eligible_marketplace: Mapped[str | None] = mapped_column(String(5), nullable=True)
+
     # Analytics
     analysis_count: Mapped[int] = mapped_column(Integer, default=0)
 

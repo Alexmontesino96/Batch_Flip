@@ -13,6 +13,7 @@ Rate limits respetados con asyncio.Semaphore por endpoint.
 
 import asyncio
 import logging
+import random
 
 import httpx
 
@@ -44,14 +45,21 @@ MARKETPLACE_REGION = {
     "jp": "fe", "au": "fe",
 }
 
-# Rate limit semaphores (requests por segundo)
+# Rate limit semaphores (concurrencia por endpoint)
+# Calibrados contra rate limits reales de SP-API (2024-2025):
+#   catalog:      2/s burst 2   → sem=2 (correcto)
+#   restrictions: 5/s burst 5   → sem=5 (correcto)
+#   fees:         0.5/s burst 1 → sem=1 (correcto, endpoint batch)
+#   pricing:      10/s burst 20 → sem=5 (subía de 2, estaba al 20%)
+#   offers:       0.5/s burst 1 → sem=1 (bajó de 2, estaba SOBRE el límite)
+#   fba:          2/s burst 30  → sem=5 (subió de 3, conservador con burst 30)
 _RATE_LIMITS = {
     "catalog": 2,
     "restrictions": 5,
     "fees": 1,
-    "pricing": 2,
-    "offers": 2,
-    "fba": 1,
+    "pricing": 5,
+    "offers": 1,
+    "fba": 5,
 }
 
 SPAPI_TIMEOUT = 15
@@ -161,36 +169,44 @@ class SPAPIProvider(DataProvider):
         params: dict | None = None, json_body: dict | None = None,
         marketplace: str | None = None,
     ) -> dict | None:
-        """Request genérico a SP-API con rate limiting y auth."""
+        """Request genérico a SP-API con rate limiting, auth y retry con backoff."""
         mkt = marketplace or self._marketplace
         base_url = _get_base_url(mkt)
         client = await self._get_client()
 
-        async with self._semaphores[semaphore_key]:
-            headers = await self._auth.get_headers(client)
-            try:
-                if method == "GET":
-                    resp = await client.get(f"{base_url}{path}", headers=headers, params=params)
-                else:
-                    resp = await client.post(f"{base_url}{path}", headers=headers, params=params, json=json_body)
+        max_retries = 5
+        for attempt in range(max_retries + 1):
+            async with self._semaphores[semaphore_key]:
+                headers = await self._auth.get_headers(client)
+                try:
+                    if method == "GET":
+                        resp = await client.get(f"{base_url}{path}", headers=headers, params=params)
+                    else:
+                        resp = await client.post(f"{base_url}{path}", headers=headers, params=params, json=json_body)
 
-                if resp.status_code == 429:
-                    logger.warning("SP-API rate limited on %s, retrying in 1s", path)
-                    await asyncio.sleep(1)
-                    return await self._request(method, path, semaphore_key, params, json_body, marketplace)
+                    if resp.status_code == 429:
+                        if attempt >= max_retries:
+                            logger.error("SP-API 429 on %s, max retries (%d) exceeded", path, max_retries)
+                            return None
+                        # Sale del async with para liberar el semáforo antes del sleep
+                    else:
+                        if resp.status_code == 403:
+                            logger.warning("SP-API 403 on %s: %s", path, resp.text[:200])
+                            return None
+                        resp.raise_for_status()
+                        return resp.json()
 
-                if resp.status_code == 403:
-                    logger.warning("SP-API 403 on %s: %s", path, resp.text[:200])
+                except httpx.HTTPStatusError as e:
+                    logger.warning("SP-API error %s on %s: %s", e.response.status_code, path, e)
+                    return None
+                except Exception as e:
+                    logger.warning("SP-API request failed on %s: %s", path, e)
                     return None
 
-                resp.raise_for_status()
-                return resp.json()
-            except httpx.HTTPStatusError as e:
-                logger.warning("SP-API error %s on %s: %s", e.response.status_code, path, e)
-                return None
-            except Exception as e:
-                logger.warning("SP-API request failed on %s: %s", path, e)
-                return None
+            # 429 retry: semáforo ya liberado, backoff exponencial con jitter
+            delay = min(2 ** attempt + random.uniform(0, 1), 30)
+            logger.warning("SP-API 429 on %s, retry %d/%d in %.1fs", path, attempt + 1, max_retries, delay)
+            await asyncio.sleep(delay)
 
     # ── Marketplace Participations ──
 

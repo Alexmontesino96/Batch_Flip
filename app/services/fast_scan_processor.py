@@ -21,6 +21,7 @@ import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import settings
@@ -146,7 +147,7 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
                     elif item.status == "error":
                         total_errors += 1
 
-            job.processed_items = (chunk_idx + 1) * CHUNK_SIZE
+            job.processed_items = min((chunk_idx + 1) * CHUNK_SIZE, len(unique_asins))
             job.matched_items = total_matched
             job.restricted_items = total_restricted
             job.profitable_items = total_profitable
@@ -231,31 +232,81 @@ async def _process_chunk(
         mfn_task = spapi.get_fees_estimate_batch(fee_requests, marketplace=job.marketplace, is_fba=False)
         fba_fees, mfn_fees = await asyncio.gather(fba_task, mfn_task)
 
-    # FBA eligibility
+    # Bulk preload de Products existentes (1 query en vez de N db.get)
+    result = await db.execute(
+        select(Product).where(Product.asin.in_(chunk_asins))
+    )
+    existing_products: dict[str, Product] = {p.asin: p for p in result.scalars().all()}
+
+    # FBA eligibility — cache en Product con TTL de 7 días, scope por marketplace
+    FBA_CACHE_TTL_DAYS = 7
     fba_eligibility: dict[str, bool | None] = {}
     if job.check_restrictions:
         sellable = [a for a in chunk_asins if not restrictions.get(a) or restrictions[a].can_sell is not False]
         if sellable:
-            fba_eligibility = await spapi.check_fba_eligibility_batch(sellable, marketplace=job.marketplace)
+            now = datetime.now(timezone.utc)
+            asins_need_api: list[str] = []
+            for asin in sellable:
+                cached = existing_products.get(asin)
+                if (
+                    cached
+                    and cached.fba_eligible is not None
+                    and cached.fba_eligible_updated_at
+                    and cached.fba_eligible_marketplace == job.marketplace
+                    and (now - cached.fba_eligible_updated_at).days < FBA_CACHE_TTL_DAYS
+                ):
+                    fba_eligibility[asin] = cached.fba_eligible
+                else:
+                    asins_need_api.append(asin)
 
-    # Upsert products
+            if asins_need_api:
+                api_results = await spapi.check_fba_eligibility_batch(asins_need_api, marketplace=job.marketplace)
+                fba_eligibility.update(api_results)
+
+            logger.info(
+                "FBA eligibility: %d cached, %d from API",
+                len(sellable) - len(asins_need_api), len(asins_need_api),
+            )
+
+    # Upsert products + persist FBA eligibility cache (con protección race condition)
+    now = datetime.now(timezone.utc)
     for asin in chunk_asins:
-        existing = await db.get(Product, asin)
+        existing = existing_products.get(asin)
         offer = offers_data.get(asin)
         catalog = catalog_data.get(asin)
         pricing = pricing_data.get(asin)
-        if not existing:
-            db.add(Product(
-                asin=asin,
-                title=catalog.title if catalog else None,
-                brand=catalog.brand if catalog else None,
-                buy_box_price=offer.buy_box_price if offer else None,
-                sales_rank=pricing.sales_rank if pricing else None,
-                spapi_updated_at=datetime.now(timezone.utc),
-                analysis_count=1,
-            ))
-        else:
+        fba_elig_value = fba_eligibility.get(asin)
+        if existing:
             existing.analysis_count = (existing.analysis_count or 0) + 1
+            if fba_elig_value is not None:
+                existing.fba_eligible = fba_elig_value
+                existing.fba_eligible_updated_at = now
+                existing.fba_eligible_marketplace = job.marketplace
+        else:
+            try:
+                async with db.begin_nested():
+                    db.add(Product(
+                        asin=asin,
+                        title=catalog.title if catalog else None,
+                        brand=catalog.brand if catalog else None,
+                        buy_box_price=offer.buy_box_price if offer else None,
+                        sales_rank=pricing.sales_rank if pricing else None,
+                        spapi_updated_at=now,
+                        fba_eligible=fba_elig_value,
+                        fba_eligible_updated_at=now if fba_elig_value is not None else None,
+                        fba_eligible_marketplace=job.marketplace if fba_elig_value is not None else None,
+                        analysis_count=1,
+                    ))
+                    await db.flush()
+            except IntegrityError:
+                # Otro job insertó primero — re-fetch y actualizar
+                re_fetched = await db.get(Product, asin)
+                if re_fetched:
+                    re_fetched.analysis_count = (re_fetched.analysis_count or 0) + 1
+                    if fba_elig_value is not None:
+                        re_fetched.fba_eligible = fba_elig_value
+                        re_fetched.fba_eligible_updated_at = now
+                        re_fetched.fba_eligible_marketplace = job.marketplace
 
     # Populate items
     for asin in chunk_asins:
