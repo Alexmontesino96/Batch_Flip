@@ -9,6 +9,7 @@ Flujo:
 import logging
 import secrets
 import uuid
+from urllib.parse import urlencode
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -91,13 +92,14 @@ async def authorize(
     state = secrets.token_urlsafe(32)
     _set_oauth_state(state, user["id"])
 
-    url = (
-        f"{AMAZON_AUTH_URL}"
-        f"?application_id={settings.sp_api_app_id}"
-        f"&state={state}"
-        f"&redirect_uri={redirect_uri}"
-        f"&version=beta"  # Required while app is in Draft state (remove after Amazon approves)
-    )
+    params = {
+        "application_id": settings.sp_api_app_id,
+        "state": state,
+        "redirect_uri": redirect_uri,
+        # Required while app is in Draft state. Remove after Amazon approves.
+        "version": "beta",
+    }
+    url = f"{AMAZON_AUTH_URL}?{urlencode(params)}"
 
     return AuthorizeResponse(authorize_url=url, state=state)
 
