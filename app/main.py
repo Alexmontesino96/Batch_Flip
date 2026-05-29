@@ -1,3 +1,5 @@
+import asyncio
+import logging
 import os
 from contextlib import asynccontextmanager
 
@@ -8,6 +10,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.config import settings
 from app.core.security_config import SECURITY_HEADERS
 
+logger = logging.getLogger(__name__)
+
 REQUIRED_CORS_ORIGINS = {
     "https://flipiqbatch.com",
     "https://www.flipiqbatch.com",
@@ -15,8 +19,6 @@ REQUIRED_CORS_ORIGINS = {
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Agrega security headers a todas las responses (OWASP + Amazon DPP)."""
-
     async def dispatch(self, request: Request, call_next):
         response: Response = await call_next(request)
         for header, value in SECURITY_HEADERS.items():
@@ -24,10 +26,49 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+async def _resume_stuck_jobs():
+    """Resume jobs that were processing when the instance was recycled.
+
+    Runs on startup. Finds jobs with status='processing' and pending items,
+    then re-enqueues them for background processing.
+    """
+    from app.database import async_session
+    from sqlalchemy import select, text
+
+    try:
+        async with async_session() as db:
+            result = await db.execute(text(
+                "SELECT id, total_items, processed_items FROM jobs WHERE status = 'processing'"
+            ))
+            stuck_jobs = result.fetchall()
+
+            if not stuck_jobs:
+                return
+
+            for job_id, total, processed in stuck_jobs:
+                logger.info("STARTUP: Resuming stuck job %s (%d/%d items)", job_id, processed, total)
+                from app.worker.tasks import enqueue_job
+                await enqueue_job(str(job_id))
+
+            logger.info("STARTUP: Resumed %d stuck jobs", len(stuck_jobs))
+    except Exception as e:
+        logger.error("STARTUP: Failed to resume stuck jobs: %s", e)
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    # Startup
     os.makedirs(settings.upload_dir, exist_ok=True)
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logger.info("STARTUP: Batch Flip API starting")
+
+    # Resume stuck jobs after a small delay (let DB connections warm up)
+    await asyncio.sleep(2)
+    await _resume_stuck_jobs()
+
     yield
+    # Shutdown
+    logger.info("SHUTDOWN: Batch Flip API stopping")
 
 
 def create_app() -> FastAPI:
@@ -37,11 +78,8 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
-    # Security headers middleware
     app.add_middleware(SecurityHeadersMiddleware)
 
-    # CORS — whitelist explícita, no wildcard. Required production origins are
-    # included in code so a stale Render env var cannot block auth preflights.
     origins = sorted({
         o.strip()
         for o in settings.cors_origins.split(",")

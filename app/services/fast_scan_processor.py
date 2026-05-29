@@ -38,8 +38,9 @@ CHUNK_SIZE = 20  # ASINs por chunk (= 1 batch request de SP-API)
 
 async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) -> None:
     """Procesa items en chunks con commits parciales."""
-    started_at = datetime.now(timezone.utc)
-    job.started_at = started_at
+    started_at = job.started_at or datetime.now(timezone.utc)
+    if not job.started_at:
+        job.started_at = started_at
 
     # Crear SP-API provider
     seller_id = settings.sp_api_seller_id
