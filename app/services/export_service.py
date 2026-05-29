@@ -97,18 +97,23 @@ EXPORT_COLUMNS = [
 ]
 
 
-async def export_job_csv(job_id: UUID, db: AsyncSession) -> str:
-    """Exporta resultados de un job a CSV. Retorna path del archivo."""
+async def export_job_csv(job_id: UUID, db: AsyncSession, items=None) -> str:
+    """Exporta resultados de un job a CSV. Retorna path del archivo.
+
+    Si se pasan `items` (lista de JobItem ya filtrada), se usan directamente.
+    De lo contrario se consultan todos los items del job sin filtrar.
+    """
     os.makedirs(settings.upload_dir, exist_ok=True)
     csv_path = os.path.join(settings.upload_dir, f"export_{job_id}.csv")
 
-    query = (
-        select(JobItem)
-        .where(JobItem.job_id == job_id)
-        .order_by(JobItem.input_row)
-    )
-    result = await db.execute(query)
-    items = result.scalars().all()
+    if items is None:
+        query = (
+            select(JobItem)
+            .where(JobItem.job_id == job_id)
+            .order_by(JobItem.input_row)
+        )
+        result = await db.execute(query)
+        items = result.scalars().all()
 
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)

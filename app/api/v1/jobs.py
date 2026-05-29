@@ -5,8 +5,8 @@ import os
 import uuid
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.v1.deps import get_db, get_job_with_ownership, validate_seller_connection_ownership
@@ -31,6 +31,77 @@ MAX_UPLOAD_SIZE = 50 * 1024 * 1024  # 50 MB
 ALLOWED_EXTENSIONS = {".csv", ".xlsx", ".xls", ".tsv", ".tab"}
 
 
+def _build_filtered_query(
+    job_id: uuid.UUID,
+    min_profit: float | None = None,
+    max_profit: float | None = None,
+    min_roi: float | None = None,
+    min_fba_profit: float | None = None,
+    min_mfn_profit: float | None = None,
+    max_bsr: int | None = None,
+    max_sellers: int | None = None,
+    min_velocity: int | None = None,
+    min_rating: float | None = None,
+    min_monthly_sold: int | None = None,
+    can_sell: bool | None = None,
+    fba_eligible: bool | None = None,
+    hide_amazon_seller: bool = False,
+    hide_restricted: bool = False,
+    status: str | None = None,
+    best_scenario: str | None = None,
+    search: str | None = None,
+):
+    """Construye un SELECT sobre JobItem aplicando los filtros comunes a results y export."""
+    query = select(JobItem).where(JobItem.job_id == job_id)
+
+    if status is not None:
+        query = query.where(JobItem.status == status)
+    if hide_restricted:
+        query = query.where(JobItem.status != "restricted")
+
+    if min_profit is not None:
+        query = query.where(JobItem.profit >= min_profit)
+    if max_profit is not None:
+        query = query.where(JobItem.profit <= max_profit)
+    if min_roi is not None:
+        query = query.where(JobItem.roi_pct >= min_roi)
+    if min_fba_profit is not None:
+        query = query.where(JobItem.fba_profit >= min_fba_profit)
+    if min_mfn_profit is not None:
+        query = query.where(JobItem.mfn_profit >= min_mfn_profit)
+    if max_bsr is not None:
+        query = query.where(JobItem.sales_rank <= max_bsr)
+    if max_sellers is not None:
+        query = query.where(JobItem.seller_count <= max_sellers)
+    if min_velocity is not None:
+        query = query.where(JobItem.velocity_score >= min_velocity)
+    if min_rating is not None:
+        query = query.where(JobItem.rating >= min_rating)
+    if min_monthly_sold is not None:
+        query = query.where(JobItem.monthly_sold >= min_monthly_sold)
+
+    if can_sell is not None:
+        query = query.where(JobItem.can_sell == can_sell)
+    if fba_eligible is not None:
+        query = query.where(JobItem.fba_eligible == fba_eligible)
+    if hide_amazon_seller:
+        query = query.where(JobItem.amazon_is_seller.is_(False))
+
+    if best_scenario is not None:
+        query = query.where(JobItem.best_scenario == best_scenario)
+    if search is not None:
+        term = f"%{search}%"
+        query = query.where(
+            or_(
+                JobItem.title.ilike(term),
+                JobItem.brand.ilike(term),
+                JobItem.asin.ilike(term),
+            )
+        )
+
+    return query
+
+
 @router.post("", response_model=JobResponse, status_code=201)
 async def create_job(
     req: CreateJobRequest,
@@ -44,9 +115,26 @@ async def create_job(
     # Validar ownership de seller_connection
     await validate_seller_connection_ownership(req.seller_connection_id, user["id"], db)
 
-    # Map legacy fields to new dual fields
-    fba_prep = req.fba_prep_cost or req.prep_cost_per_item
-    fba_ship = req.fba_shipping_to_amazon or req.shipping_to_amazon
+    # Si se provee cost_profile_id, cargar el perfil y copiar los costos
+    if req.cost_profile_id is not None:
+        from app.models.cost_profile import CostProfile
+        profile = await db.get(CostProfile, req.cost_profile_id)
+        if not profile:
+            raise HTTPException(404, "Perfil de costos no encontrado")
+        if str(profile.user_id) != user["id"]:
+            raise HTTPException(403, "El perfil de costos no pertenece a este usuario")
+        fba_prep = float(profile.fba_prep_cost)
+        fba_ship = float(profile.fba_shipping_to_amazon)
+        mfn_prep = float(profile.mfn_prep_cost)
+        mfn_ship_customer = float(profile.mfn_shipping_to_customer)
+        mfn_pack = float(profile.mfn_packaging_cost)
+    else:
+        # Map legacy fields to new dual fields
+        fba_prep = req.fba_prep_cost or req.prep_cost_per_item
+        fba_ship = req.fba_shipping_to_amazon or req.shipping_to_amazon
+        mfn_prep = req.mfn_prep_cost
+        mfn_ship_customer = req.mfn_shipping_to_customer
+        mfn_pack = req.mfn_packaging_cost
 
     job = Job(
         user_id=uuid.UUID(user["id"]),
@@ -57,9 +145,9 @@ async def create_job(
         # Dual costs
         fba_prep_cost=fba_prep,
         fba_shipping_to_amazon=fba_ship,
-        mfn_prep_cost=req.mfn_prep_cost,
-        mfn_shipping_to_customer=req.mfn_shipping_to_customer,
-        mfn_packaging_cost=req.mfn_packaging_cost,
+        mfn_prep_cost=mfn_prep,
+        mfn_shipping_to_customer=mfn_ship_customer,
+        mfn_packaging_cost=mfn_pack,
         # Legacy
         prep_cost_per_item=req.prep_cost_per_item,
         shipping_to_amazon=req.shipping_to_amazon,
@@ -201,25 +289,78 @@ async def get_results(
     page: int = 1,
     page_size: int = 50,
     sort_by: str = "profit",
-    profitable_only: bool = False,
+    sort_order: str = Query(default="desc"),
+    # Numeric range filters
+    min_profit: float | None = Query(default=None),
+    max_profit: float | None = Query(default=None),
+    min_roi: float | None = Query(default=None),
+    min_fba_profit: float | None = Query(default=None),
+    min_mfn_profit: float | None = Query(default=None),
+    max_bsr: int | None = Query(default=None),
+    max_sellers: int | None = Query(default=None),
+    min_velocity: int | None = Query(default=None),
+    min_rating: float | None = Query(default=None),
+    min_monthly_sold: int | None = Query(default=None),
+    # Boolean filters
+    can_sell: bool | None = Query(default=None),
+    fba_eligible: bool | None = Query(default=None),
+    hide_amazon_seller: bool = Query(default=False),
+    hide_restricted: bool = Query(default=False),
+    # String filters
+    status: str | None = Query(default=None),
+    best_scenario: str | None = Query(default=None),
+    search: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user_with_db),
 ):
     """Obtener resultados paginados del job (requiere auth + ownership)."""
     await get_job_with_ownership(job_id, db, user["id"])
 
-    query = select(JobItem).where(JobItem.job_id == job_id, JobItem.status == "matched")
-    if profitable_only:
-        query = query.where(JobItem.profit > 0)
+    query = _build_filtered_query(
+        job_id=job_id,
+        min_profit=min_profit,
+        max_profit=max_profit,
+        min_roi=min_roi,
+        min_fba_profit=min_fba_profit,
+        min_mfn_profit=min_mfn_profit,
+        max_bsr=max_bsr,
+        max_sellers=max_sellers,
+        min_velocity=min_velocity,
+        min_rating=min_rating,
+        min_monthly_sold=min_monthly_sold,
+        can_sell=can_sell,
+        fba_eligible=fba_eligible,
+        hide_amazon_seller=hide_amazon_seller,
+        hide_restricted=hide_restricted,
+        status=status,
+        best_scenario=best_scenario,
+        search=search,
+    )
 
+    # Build sort expression
     sort_map = {
-        "profit": JobItem.profit.desc().nulls_last(),
-        "roi": JobItem.roi_pct.desc().nulls_last(),
-        "rank": JobItem.sales_rank.asc().nulls_last(),
-        "velocity": JobItem.velocity_score.desc().nulls_last(),
-        "row": JobItem.input_row.asc(),
+        "profit": JobItem.profit,
+        "fba_profit": JobItem.fba_profit,
+        "mfn_profit": JobItem.mfn_profit,
+        "roi": JobItem.roi_pct,
+        "fba_roi": JobItem.fba_roi_pct,
+        "mfn_roi": JobItem.mfn_roi_pct,
+        "rank": JobItem.sales_rank,
+        "velocity": JobItem.velocity_score,
+        "monthly_sold": JobItem.monthly_sold,
+        "sellers": JobItem.seller_count,
+        "rating": JobItem.rating,
+        "reviews": JobItem.review_count,
+        "buy_box": JobItem.buy_box_price,
+        "cost": JobItem.cost_price,
+        "row": JobItem.input_row,
     }
-    query = query.order_by(sort_map.get(sort_by, sort_map["profit"]))
+    sort_col = sort_map.get(sort_by, JobItem.profit)
+    if sort_order == "asc":
+        order_expr = sort_col.asc().nulls_last()
+    else:
+        order_expr = sort_col.desc().nulls_last()
+    query = query.order_by(order_expr)
 
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
@@ -279,14 +420,58 @@ async def get_stats(
 @router.get("/{job_id}/export")
 async def export_job(
     job_id: uuid.UUID,
+    # Numeric range filters
+    min_profit: float | None = Query(default=None),
+    max_profit: float | None = Query(default=None),
+    min_roi: float | None = Query(default=None),
+    min_fba_profit: float | None = Query(default=None),
+    min_mfn_profit: float | None = Query(default=None),
+    max_bsr: int | None = Query(default=None),
+    max_sellers: int | None = Query(default=None),
+    min_velocity: int | None = Query(default=None),
+    min_rating: float | None = Query(default=None),
+    min_monthly_sold: int | None = Query(default=None),
+    # Boolean filters
+    can_sell: bool | None = Query(default=None),
+    fba_eligible: bool | None = Query(default=None),
+    hide_amazon_seller: bool = Query(default=False),
+    hide_restricted: bool = Query(default=False),
+    # String filters
+    status: str | None = Query(default=None),
+    best_scenario: str | None = Query(default=None),
+    search: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user_with_db),
 ):
-    """Exportar resultados a CSV (requiere auth + ownership)."""
+    """Exportar resultados filtrados a CSV (requiere auth + ownership)."""
     await get_job_with_ownership(job_id, db, user["id"])
 
+    query = _build_filtered_query(
+        job_id=job_id,
+        min_profit=min_profit,
+        max_profit=max_profit,
+        min_roi=min_roi,
+        min_fba_profit=min_fba_profit,
+        min_mfn_profit=min_mfn_profit,
+        max_bsr=max_bsr,
+        max_sellers=max_sellers,
+        min_velocity=min_velocity,
+        min_rating=min_rating,
+        min_monthly_sold=min_monthly_sold,
+        can_sell=can_sell,
+        fba_eligible=fba_eligible,
+        hide_amazon_seller=hide_amazon_seller,
+        hide_restricted=hide_restricted,
+        status=status,
+        best_scenario=best_scenario,
+        search=search,
+    ).order_by(JobItem.input_row)
+
+    result = await db.execute(query)
+    items = result.scalars().all()
+
     from app.services.export_service import export_job_csv
-    csv_path = await export_job_csv(job_id, db)
+    csv_path = await export_job_csv(job_id, db, items=items)
 
     from fastapi.responses import FileResponse
     return FileResponse(csv_path, media_type="text/csv", filename=f"batchflip_{job_id}.csv")

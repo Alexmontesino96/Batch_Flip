@@ -21,6 +21,8 @@ class CreateJobRequest(BaseModel):
     # Legacy (backward compat)
     prep_cost_per_item: float = Field(default=0.0, ge=0, description="Legacy: maps to fba_prep_cost")
     shipping_to_amazon: float = Field(default=0.0, ge=0, description="Legacy: maps to fba_shipping_to_amazon")
+    # Cost profile (opcional — si se provee, sobreescribe los campos de costo inline)
+    cost_profile_id: UUID | None = Field(default=None, description="ID de un CostProfile guardado")
     # SP-API
     seller_connection_id: UUID | None = Field(default=None)
     check_restrictions: bool = Field(default=True)

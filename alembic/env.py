@@ -9,6 +9,7 @@ from alembic import context
 from app.config import settings
 from app.database import Base
 from app.models.audit_log import AuditLog  # noqa: F401
+from app.models.cost_profile import CostProfile  # noqa: F401
 from app.models.job import Job  # noqa: F401
 from app.models.job_item import JobItem  # noqa: F401
 from app.models.product import Product  # noqa: F401
