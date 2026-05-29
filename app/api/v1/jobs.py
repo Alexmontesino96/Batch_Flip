@@ -262,14 +262,15 @@ async def start_job(
     # Reservar scans
     user_row.scans_used_month += job.total_items
 
-    job.status = "processing"
-    job.progress_phase = "resolving_ids"
+    # Encolar en PG queue — el polling worker lo tomará
+    from datetime import datetime, timezone
+    job.status = "queued"
+    job.queued_at = datetime.now(timezone.utc)
+    job.locked_by = None
+    job.locked_at = None
     await db.commit()
 
-    from app.worker.tasks import enqueue_job
-    await enqueue_job(str(job_id))
-
-    return {"message": "Job iniciado", "job_id": str(job_id), "scans_remaining": remaining - job.total_items}
+    return {"message": "Job enqueued", "job_id": str(job_id), "scans_remaining": remaining - job.total_items}
 
 
 @router.get("/{job_id}", response_model=JobResponse)

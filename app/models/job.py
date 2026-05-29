@@ -66,6 +66,11 @@ class Job(Base):
     prep_cost_per_item: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
     shipping_to_amazon: Mapped[float] = mapped_column(Numeric(8, 2), default=0)
 
+    # Queue (PG-backed job queue)
+    queued_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    locked_by: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     # Timing
     processing_speed: Mapped[float | None] = mapped_column(Numeric(10, 2), nullable=True)
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

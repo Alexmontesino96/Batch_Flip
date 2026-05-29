@@ -65,6 +65,12 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
         await db.commit()
 
         for item in items:
+            # Skip items ya resueltos (resume después de recycle)
+            if item.asin:
+                continue
+            if item.status not in ("pending",):
+                continue
+
             if item.input_id_type == "asin":
                 item.asin = item.input_id
             else:

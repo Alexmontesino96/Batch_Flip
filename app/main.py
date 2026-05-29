@@ -27,30 +27,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 
 
 async def _resume_stuck_jobs():
-    """Resume jobs that were processing when the instance was recycled.
-
-    Runs on startup. Finds jobs with status='processing' and pending items,
-    then re-enqueues them for background processing.
-    """
+    """Reset jobs stuck en 'processing' a 'queued' para que el polling loop los retome."""
+    from sqlalchemy import text
     from app.database import async_session
-    from sqlalchemy import select, text
 
     try:
         async with async_session() as db:
-            result = await db.execute(text(
-                "SELECT id, total_items, processed_items FROM jobs WHERE status = 'processing'"
-            ))
-            stuck_jobs = result.fetchall()
+            result = await db.execute(text("""
+                UPDATE jobs SET status = 'queued', locked_by = NULL, locked_at = NULL
+                WHERE status = 'processing'
+                RETURNING id
+            """))
+            resumed = result.fetchall()
+            await db.commit()
 
-            if not stuck_jobs:
-                return
+            for row in resumed:
+                logger.info("STARTUP: Reset stuck job %s → queued", row[0])
 
-            for job_id, total, processed in stuck_jobs:
-                logger.info("STARTUP: Resuming stuck job %s (%d/%d items)", job_id, processed, total)
-                from app.worker.tasks import enqueue_job
-                await enqueue_job(str(job_id))
-
-            logger.info("STARTUP: Resumed %d stuck jobs", len(stuck_jobs))
+            if resumed:
+                logger.info("STARTUP: %d stuck jobs reset to queued", len(resumed))
     except Exception as e:
         logger.error("STARTUP: Failed to resume stuck jobs: %s", e)
 
@@ -62,13 +57,23 @@ async def lifespan(app: FastAPI):
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logger.info("STARTUP: Batch Flip API starting")
 
-    # Resume stuck jobs after a small delay (let DB connections warm up)
-    await asyncio.sleep(2)
+    # Reset stuck jobs
     await _resume_stuck_jobs()
 
+    # Start PG queue worker
+    from app.worker.tasks import job_queue_worker
+    worker_task = asyncio.create_task(job_queue_worker())
+    logger.info("STARTUP: Job queue worker started")
+
     yield
+
     # Shutdown
-    logger.info("SHUTDOWN: Batch Flip API stopping")
+    worker_task.cancel()
+    try:
+        await worker_task
+    except asyncio.CancelledError:
+        pass
+    logger.info("SHUTDOWN: Batch Flip API stopped")
 
 
 def create_app() -> FastAPI:

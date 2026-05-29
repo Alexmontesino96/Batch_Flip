@@ -170,6 +170,16 @@ async def process_job(job_id: str, db: AsyncSession) -> None:
             await db.commit()
             return
 
+        # Filtrar items ya procesados (resume después de recycle)
+        pending_items = [i for i in items if i.status == "pending"]
+        logger.info("Deep scan: %d total items, %d pending", len(items), len(pending_items))
+
+        if not pending_items:
+            job.status = "completed"
+            job.completed_at = datetime.now(timezone.utc)
+            await db.commit()
+            return
+
         # ════════════════════════════════════════════
         # FASE 1: ID Resolution (UPC/EAN → ASIN)
         # ════════════════════════════════════════════
@@ -177,7 +187,9 @@ async def process_job(job_id: str, db: AsyncSession) -> None:
         await db.commit()
 
         resolve_items = []
-        for item in items:
+        for item in pending_items:
+            if item.asin:  # Ya resuelto (resume)
+                continue
             if item.input_id_type == "asin":
                 item.asin = item.input_id
             else:
