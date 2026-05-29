@@ -18,7 +18,7 @@ from app.database import Base
 
 # Límites por plan
 PLAN_LIMITS = {
-    "free": 500,
+    "free": 999_999_999,
     "starter": 50_000,
     "pro": 200_000,
     "enterprise": 999_999_999,
@@ -39,7 +39,7 @@ class User(Base):
 
     # Rate limiting
     scans_used_month: Mapped[int] = mapped_column(Integer, default=0)
-    scans_limit_month: Mapped[int] = mapped_column(Integer, default=500)
+    scans_limit_month: Mapped[int] = mapped_column(Integer, default=999_999_999)
 
     # Billing (futuro)
     stripe_customer_id: Mapped[str | None] = mapped_column(String(255), unique=True, nullable=True)
