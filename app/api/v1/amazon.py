@@ -85,7 +85,7 @@ class ManualConnectRequest(BaseModel):
 
 @router.get("/authorize", response_model=AuthorizeResponse)
 async def authorize(
-    redirect_uri: str = Query(default="http://localhost:3000/dashboard/connect/callback"),
+    redirect_uri: str = Query(default="https://flipiqbatch.com/dashboard/connect/callback"),
     user: dict = Depends(get_current_user_with_db),
 ):
     """Genera URL de autorización de Amazon Seller Central."""
