@@ -96,6 +96,7 @@ async def authorize(
         f"?application_id={settings.sp_api_app_id}"
         f"&state={state}"
         f"&redirect_uri={redirect_uri}"
+        f"&version=beta"  # Required while app is in Draft state (remove after Amazon approves)
     )
 
     return AuthorizeResponse(authorize_url=url, state=state)
