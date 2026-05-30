@@ -367,3 +367,21 @@ async def _process_chunk(
                 item.status = "matched"
             else:
                 item.status = "not_found"
+
+            # Restriction kind (normalized lowercase of SP-API reason)
+            if item.restriction_reason:
+                item.restriction_kind = item.restriction_reason.lower()
+
+            # Analysis bucket
+            has_profit = item.profit is not None and float(item.profit) > 0
+            if item.status == "not_found":
+                item.analysis_bucket = "not_found"
+            elif item.status == "error":
+                item.analysis_bucket = "error"
+            elif item.status == "restricted":
+                if item.restriction_reason == "APPROVAL_REQUIRED":
+                    item.analysis_bucket = "approval_candidate" if has_profit else "approval_unprofitable"
+                else:
+                    item.analysis_bucket = "restricted_hard"
+            elif item.status == "matched":
+                item.analysis_bucket = "sellable_profitable" if has_profit else "sellable_unprofitable"

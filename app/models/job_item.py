@@ -66,10 +66,14 @@ class JobItem(Base):
     # Best scenario
     best_scenario: Mapped[str | None] = mapped_column(String(10), nullable=True)  # fba, mfn, neither
 
+    # Analysis bucket (computed: sellable_profitable, approval_candidate, restricted_hard, etc.)
+    analysis_bucket: Mapped[str | None] = mapped_column(String(25), nullable=True, index=True)
+
     # Listing Restrictions (SP-API)
     can_sell: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     fba_eligible: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     restriction_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    restriction_kind: Mapped[str | None] = mapped_column(String(25), nullable=True)  # approval_required, not_eligible, asin_not_found
     restriction_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     # Fees exactos (SP-API)

@@ -22,10 +22,14 @@ EXPORT_COLUMNS = [
     ("brand", "Brand"),
     ("category", "Category"),
 
+    # Analysis
+    ("analysis_bucket", "Analysis Bucket"),
+
     # Restrictions
     ("can_sell", "Can Sell?"),
     ("fba_eligible", "FBA Eligible?"),
     ("restriction_reason", "Restriction"),
+    ("restriction_kind", "Restriction Kind"),
 
     # Pricing
     ("buy_box_price", "Buy Box Price"),

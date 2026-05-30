@@ -99,10 +99,14 @@ class JobItemResponse(BaseModel):
     item_length: int | None
     item_width: int | None
 
+    # Analysis
+    analysis_bucket: str | None  # sellable_profitable, approval_candidate, restricted_hard, etc.
+
     # Listing Restrictions
     can_sell: bool | None
     fba_eligible: bool | None
     restriction_reason: str | None
+    restriction_kind: str | None  # approval_required, not_eligible, asin_not_found
     restriction_message: str | None
 
     # Fees (SP-API exactos o Keepa fallback)
@@ -166,3 +170,8 @@ class JobResultsResponse(BaseModel):
     page: int
     page_size: int
     total_pages: int
+
+
+class BucketSummaryResponse(BaseModel):
+    buckets: dict[str, int]
+    total: int

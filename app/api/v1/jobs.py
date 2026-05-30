@@ -16,6 +16,7 @@ from app.core.auth import get_current_user_with_db, upsert_user
 from app.models.job import MARKETPLACE_DOMAINS, Job
 from app.models.job_item import JobItem
 from app.schemas.job import (
+    BucketSummaryResponse,
     CreateJobRequest,
     JobItemResponse,
     JobResponse,
@@ -50,6 +51,8 @@ def _build_filtered_query(
     hide_restricted: bool = False,
     status: str | None = None,
     best_scenario: str | None = None,
+    analysis_bucket: str | None = None,
+    restriction_kind: str | None = None,
     search: str | None = None,
 ):
     """Construye un SELECT sobre JobItem aplicando los filtros comunes a results y export."""
@@ -90,6 +93,10 @@ def _build_filtered_query(
 
     if best_scenario is not None:
         query = query.where(JobItem.best_scenario == best_scenario)
+    if analysis_bucket is not None:
+        query = query.where(JobItem.analysis_bucket == analysis_bucket)
+    if restriction_kind is not None:
+        query = query.where(JobItem.restriction_kind == restriction_kind)
     if search is not None:
         term = f"%{search}%"
         query = query.where(
@@ -315,6 +322,8 @@ async def get_results(
     # String filters
     status: str | None = Query(default=None),
     best_scenario: str | None = Query(default=None),
+    analysis_bucket: str | None = Query(default=None),
+    restriction_kind: str | None = Query(default=None),
     search: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user_with_db),
@@ -340,6 +349,8 @@ async def get_results(
         hide_restricted=hide_restricted,
         status=status,
         best_scenario=best_scenario,
+        analysis_bucket=analysis_bucket,
+        restriction_kind=restriction_kind,
         search=search,
     )
 
@@ -423,6 +434,24 @@ async def get_stats(
     )
 
 
+@router.get("/{job_id}/results/bucket-summary", response_model=BucketSummaryResponse)
+async def get_bucket_summary(
+    job_id: uuid.UUID,
+    db: AsyncSession = Depends(get_db),
+    user: dict = Depends(get_current_user_with_db),
+):
+    """Conteo de items por analysis_bucket para todo el job."""
+    await get_job_with_ownership(job_id, db, user["id"])
+
+    result = await db.execute(
+        select(JobItem.analysis_bucket, func.count())
+        .where(JobItem.job_id == job_id)
+        .group_by(JobItem.analysis_bucket)
+    )
+    buckets = {row[0] or "unknown": row[1] for row in result.fetchall()}
+    return BucketSummaryResponse(buckets=buckets, total=sum(buckets.values()))
+
+
 @router.get("/{job_id}/export")
 async def export_job(
     job_id: uuid.UUID,
@@ -445,6 +474,8 @@ async def export_job(
     # String filters
     status: str | None = Query(default=None),
     best_scenario: str | None = Query(default=None),
+    analysis_bucket: str | None = Query(default=None),
+    restriction_kind: str | None = Query(default=None),
     search: str | None = Query(default=None),
     db: AsyncSession = Depends(get_db),
     user: dict = Depends(get_current_user_with_db),
@@ -470,6 +501,8 @@ async def export_job(
         hide_restricted=hide_restricted,
         status=status,
         best_scenario=best_scenario,
+        analysis_bucket=analysis_bucket,
+        restriction_kind=restriction_kind,
         search=search,
     ).order_by(JobItem.input_row)
 
