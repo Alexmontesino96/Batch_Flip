@@ -3,6 +3,7 @@
 import math
 import os
 import uuid
+from typing import Literal
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile
@@ -289,8 +290,12 @@ async def get_results(
     job_id: uuid.UUID,
     page: int = 1,
     page_size: int = 50,
-    sort_by: str = "profit",
-    sort_order: str = Query(default="desc"),
+    sort_by: Literal[
+        "profit", "fba_profit", "mfn_profit", "roi", "fba_roi", "mfn_roi",
+        "rank", "velocity", "monthly_sold", "sellers", "rating", "reviews",
+        "buy_box", "cost", "row",
+    ] = "profit",
+    sort_order: Literal["asc", "desc"] = "desc",
     # Numeric range filters
     min_profit: float | None = Query(default=None),
     max_profit: float | None = Query(default=None),

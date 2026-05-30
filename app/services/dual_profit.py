@@ -87,12 +87,14 @@ def compute_dual_profit(
         mfn_pr = None
 
     # ── Best Scenario ──
+    # best_scenario refleja cuál fulfillment da más profit, independiente de
+    # can_sell/restrictions. La elegibilidad se consulta por separado vía
+    # can_sell y restriction_reason. Así el seller ve "MFN da $365 de profit"
+    # aunque necesite aprobación — y puede decidir si vale la pena solicitarla.
     fba_p = float(item.fba_profit) if item.fba_profit is not None else -999
     mfn_p = float(item.mfn_profit) if item.mfn_profit is not None else -999
 
-    if item.can_sell is False:
-        item.best_scenario = "neither"
-    elif item.fba_eligible is False:
+    if item.fba_eligible is False:
         item.best_scenario = "mfn" if mfn_p > 0 else "neither"
     elif fba_p > 0 and mfn_p > 0:
         item.best_scenario = "fba" if fba_p >= mfn_p else "mfn"

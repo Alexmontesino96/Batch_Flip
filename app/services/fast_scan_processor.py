@@ -151,7 +151,7 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
             job.matched_items = total_matched
             job.restricted_items = total_restricted
             job.profitable_items = total_profitable
-            job.error_items = total_not_found + total_errors
+            job.error_items = total_errors
             await db.commit()
 
             logger.info(
@@ -160,9 +160,9 @@ async def fast_scan_process(job: Job, items: list[JobItem], db: AsyncSession) ->
             )
 
         # ── Finalizar ──
-        job.progress_phase = "persisting"
         job.processed_items = len(items)
         job.status = "completed_with_errors" if (total_not_found or total_errors) else "completed"
+        job.progress_phase = "completed"
         job.completed_at = datetime.now(timezone.utc)
 
         elapsed_hours = (job.completed_at - started_at).total_seconds() / 3600
